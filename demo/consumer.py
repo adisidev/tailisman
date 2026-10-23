@@ -19,11 +19,10 @@ import secrets
 import threading
 from pathlib import Path
 
-from tailisman import Claim, TailismanError, Verifier, extract_token
+from tailisman import MAX_BODY, Claim, TailismanError, Verifier, extract_token
 
 SNIPPET = Path(__file__).resolve().parent.parent / "client" / "tailisman.js"
 COOKIE = "demo_session"
-MAX_BODY = 16 * 1024
 
 PAGE = """<!doctype html><meta charset=utf-8><title>tailisman demo</title>
 <body data-outcome="{outcome}">
@@ -99,7 +98,10 @@ def handler_for(demo: Demo) -> type[http.server.BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             if self.path != "/auth/tailisman":
                 return self._send(404, "text/plain", b"not found\n")
-            length = int(self.headers.get("Content-Length") or 0)
+            declared = self.headers.get("Content-Length") or "0"
+            if not declared.isascii() or not declared.isdigit():
+                return self._send(400, "text/plain", b"bad Content-Length\n")
+            length = int(declared)
             if length > MAX_BODY:
                 return self._send(413, "text/plain", b"too large\n")
             content_type = self.headers.get("Content-Type")

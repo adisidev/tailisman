@@ -1,6 +1,6 @@
 import pytest
 
-from tailisman import ErrorCode, InMemoryReplayStore, TailismanError, Verifier, extract_token
+from tailisman import MAX_BODY, MAX_TOKEN, ErrorCode, InMemoryReplayStore, TailismanError, Verifier, extract_token
 from tailisman._token import Claim, derive_consumer_key, encode, format_key, new_nonce
 
 MASTER = b"\x07" * 32
@@ -109,3 +109,27 @@ def test_extract_token_refuses_other_bodies(content_type, body):
     with pytest.raises(TailismanError) as caught:
         extract_token(content_type, body)
     assert caught.value.code == ErrorCode.MALFORMED
+
+
+@pytest.mark.parametrize("content_type,body", [
+    ("application/json", b"[" * 100_000 + b"]" * 100_000),
+    ("application/json", b'{"token": {"token": ' * 5_000 + b"1" + b"}" * 5_000),
+    ("application/json", b'{"token": "' + b"a" * (MAX_TOKEN + 1) + b'"}'),
+    ("application/x-www-form-urlencoded", b"token=" + b"a" * (MAX_TOKEN + 1)),
+    ("application/json", b'{"token": "tsm1.a.b", "pad": "' + b"a" * MAX_BODY + b'"}'),
+    ("application/x-www-form-urlencoded", b"token"),
+])
+def test_extract_token_turns_hostile_bodies_into_malformed(content_type, body):
+    with pytest.raises(TailismanError) as caught:
+        extract_token(content_type, body)
+    assert caught.value.code == ErrorCode.MALFORMED
+
+
+def test_extract_token_accepts_a_token_at_the_length_cap():
+    assert extract_token("application/json", b'{"token": "' + b"a" * MAX_TOKEN + b'"}') == "a" * MAX_TOKEN
+
+
+@pytest.mark.parametrize("leeway", [-1, 1.5, True])
+def test_leeway_must_be_a_non_negative_integer(leeway):
+    with pytest.raises(ValueError):
+        verifier(leeway=leeway)

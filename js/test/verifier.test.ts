@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 
-import { InMemoryReplayStore, TailismanError, Verifier, extractToken, type ErrorCode } from "../src/index.ts";
+import { InMemoryReplayStore, MAX_BODY, MAX_TOKEN, TailismanError, Verifier, extractToken, type ErrorCode } from "../src/index.ts";
 import { deriveConsumerKey, formatKey } from "../src/token.ts";
 
 const AUD = "https://heckle.example.com";
@@ -68,5 +68,23 @@ test("extractToken reads both bodies and refuses others", () => {
   assert.equal(extractToken("application/x-www-form-urlencoded", new TextEncoder().encode("token=tsm1.a.b")), "tsm1.a.b");
   for (const [ct, body] of [["text/plain", "tsm1.a.b"], ["application/json", "[1]"], ["application/json", '{"token":1}'], ["application/x-www-form-urlencoded", "token=a&token=b"], [undefined, "{}"]] as const) {
     assert.throws(() => extractToken(ct, body), (e: unknown) => e instanceof TailismanError && e.code === "malformed");
+  }
+});
+test("extractToken turns hostile bodies into malformed", () => {
+  const hostile: Array<[string, string | Uint8Array]> = [
+    ["application/json", "[".repeat(100_000) + "]".repeat(100_000)],
+    ["application/json", `{"token":"${"a".repeat(MAX_TOKEN + 1)}"}`],
+    ["application/x-www-form-urlencoded", `token=${"a".repeat(MAX_TOKEN + 1)}`],
+    ["application/json", new TextEncoder().encode(`{"token":"tsm1.a.b","pad":"${"a".repeat(MAX_BODY)}"}`)],
+    ["application/json", new Uint8Array([0xff])],
+  ];
+  for (const [ct, body] of hostile) {
+    assert.throws(() => extractToken(ct, body), (e: unknown) => e instanceof TailismanError && e.code === "malformed");
+  }
+  assert.equal(extractToken("application/json", `{"token":"${"a".repeat(MAX_TOKEN)}"}`), "a".repeat(MAX_TOKEN));
+});
+test("leeway must be a non-negative integer", () => {
+  for (const leeway of [-1, 1.5, Number.NaN]) {
+    assert.throws(() => new Verifier({ key: formatKey(KEY), audience: AUD, leeway }), RangeError);
   }
 });

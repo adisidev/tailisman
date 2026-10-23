@@ -78,3 +78,13 @@ def test_page_without_session_serves_the_snippet(demo):
     response, script = call(demo, "GET", "/tailisman.js")
     assert response.getheader("Content-Type").startswith("text/javascript") and b"export function mount" in script
     assert state(demo, "") == {"signed_in": False}
+
+
+@pytest.mark.parametrize("declared,status", [("abc", 400), ("-1", 400), ("1e3", 400), ("99999999999999999999", 413)])
+def test_exchange_answers_a_bad_content_length_without_crashing(demo, declared, status):
+    conn = http.client.HTTPConnection(*demo.server_address[:2], timeout=10)
+    conn.putrequest("POST", "/auth/tailisman")
+    conn.putheader("Content-Type", "application/json")
+    conn.putheader("Content-Length", declared)
+    conn.endheaders()
+    assert conn.getresponse().status == status

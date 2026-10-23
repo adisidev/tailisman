@@ -4,6 +4,9 @@ import { InMemoryReplayStore, type ReplayStore } from "./replay.ts";
 export { type Claim, type ErrorCode, ERROR_CODES, TailismanError } from "./token.ts";
 export { InMemoryReplayStore, type ReplayStore } from "./replay.ts";
 
+export const MAX_BODY = 16 * 1024;
+export const MAX_TOKEN = 4096;
+
 export interface VerifierOptions {
   key: string;
   audience: string;
@@ -23,11 +26,13 @@ export class Verifier {
   readonly #clock: () => number;
 
   constructor(opts: VerifierOptions) {
+    const leeway = opts.leeway ?? 5;
+    if (!Number.isSafeInteger(leeway) || leeway < 0) throw new RangeError("leeway must be a non-negative integer number of seconds");
     this.#key = parseKey(opts.key);
     this.#audience = normaliseOrigin(opts.audience);
     this.#replay = opts.replay ?? new InMemoryReplayStore();
     this.#devices = opts.devices === undefined ? null : new Set(opts.devices);
-    this.#leeway = opts.leeway ?? 5;
+    this.#leeway = leeway;
     this.#clock = opts.clock ?? (() => Date.now() / 1000);
   }
 
@@ -47,6 +52,8 @@ export class Verifier {
 
 export function extractToken(contentType: string | undefined | null, body: string | Uint8Array): string {
   const mediaType = (contentType ?? "").split(";")[0]!.trim().toLowerCase();
+  const size = typeof body === "string" ? Buffer.byteLength(body) : body.byteLength;
+  if (size > MAX_BODY) throw new TailismanError("malformed", `body is over ${MAX_BODY} bytes`);
   let token: unknown = null;
   try {
     const text = typeof body === "string" ? body : new TextDecoder("utf-8", { fatal: true }).decode(body);
@@ -60,6 +67,8 @@ export function extractToken(contentType: string | undefined | null, body: strin
   } catch {
     token = null;
   }
-  if (typeof token !== "string") throw new TailismanError("malformed", "expected a JSON or form body with one token field");
+  if (typeof token !== "string" || token.length > MAX_TOKEN) {
+    throw new TailismanError("malformed", `expected a JSON or form body with one token field of at most ${MAX_TOKEN} characters`);
+  }
   return token;
 }

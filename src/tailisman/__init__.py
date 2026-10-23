@@ -14,7 +14,10 @@ from urllib.parse import parse_qs
 from ._replay import InMemoryReplayStore, ReplayStore
 from ._token import Claim, ErrorCode, TailismanError, decode, normalise_origin, parse_key
 
-__all__ = ["Verifier", "Claim", "ErrorCode", "TailismanError", "extract_token", "ReplayStore", "InMemoryReplayStore"]
+__all__ = ["Verifier", "Claim", "ErrorCode", "TailismanError", "extract_token", "ReplayStore", "InMemoryReplayStore", "MAX_BODY", "MAX_TOKEN"]
+
+MAX_BODY = 16 * 1024
+MAX_TOKEN = 4096
 
 
 class Verifier:
@@ -28,6 +31,8 @@ class Verifier:
         leeway: int = 5,
         clock: Callable[[], float] = time.time,
     ) -> None:
+        if type(leeway) is not int or leeway < 0:
+            raise ValueError("leeway must be a non-negative integer number of seconds")
         self._key = parse_key(key)
         self._audience = normalise_origin(audience)
         self._replay = replay if replay is not None else InMemoryReplayStore()
@@ -53,6 +58,8 @@ class Verifier:
 
 def extract_token(content_type: str | None, body: bytes) -> str:
     media_type = (content_type or "").split(";")[0].strip().lower()
+    if len(body) > MAX_BODY:
+        raise TailismanError(ErrorCode.MALFORMED, f"body is over {MAX_BODY} bytes")
     try:
         if media_type == "application/json":
             token = json.loads(body.decode("utf-8")).get("token")
@@ -61,8 +68,8 @@ def extract_token(content_type: str | None, body: bytes) -> str:
             token = values[0] if len(values) == 1 else None
         else:
             token = None
-    except (UnicodeDecodeError, ValueError, AttributeError):
+    except (ValueError, AttributeError, RecursionError):
         token = None
-    if not isinstance(token, str):
-        raise TailismanError(ErrorCode.MALFORMED, "expected a JSON or form body with one token field")
+    if not isinstance(token, str) or len(token) > MAX_TOKEN:
+        raise TailismanError(ErrorCode.MALFORMED, f"expected a JSON or form body with one token field of at most {MAX_TOKEN} characters")
     return token
