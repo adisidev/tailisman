@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+# The keys and tokens in testdata/vectors.json derive from the fixed, public test master bytes(range(32)) in scripts/make_vectors.py, so they protect nothing.
+[allowlist]
+description = "generated test vectors"
+paths = ['''^testdata/vectors\.json$''']
