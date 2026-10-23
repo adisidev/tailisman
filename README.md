@@ -131,7 +131,7 @@ Answer the JSON body (silent path) with a 2xx and the form body (navigation path
 
 ## The verifier
 
-`Verifier(key, audience, replay=None, devices=None, leeway=5, clock=time.time)` checks, in this order, the format and MAC (`malformed`, `bad_signature`), the audience (`wrong_audience`), the time window with `leeway` seconds of skew (`expired`, `not_yet_valid`), single use of the nonce (`replayed`), and, when you pass `devices`, that the node's stable ID or short name is in your own list (`device_not_allowed`). Every failure raises `TailismanError` with one of those codes. The Node verifier has the same options in camelCase and the same codes.
+`Verifier(key, audience, replay=None, devices=None, leeway=5, clock=time.time)` checks, in this order, the format and MAC (`malformed`, `bad_signature`), the audience (`wrong_audience`), the time window with `leeway` seconds of skew (`expired`, `not_yet_valid`), single use of the nonce (`replayed`), and, when you pass `devices`, that the node's stable ID or short name is in your own list (`device_not_allowed`). Every failure raises `TailismanError` with one of those codes. A negative or non-integer `leeway` is refused when the verifier is built. The Node verifier has the same options in camelCase and the same codes.
 
 The default replay store is a dictionary in memory, which is correct for one process. A server with several worker processes needs one store they all share. Pass any object with one method:
 
@@ -143,7 +143,7 @@ class ReplayStore(Protocol):
 
 The method must be atomic across workers. With Redis that is `SET nonce 1 NX EXAT until`. With SQLite it is `INSERT OR IGNORE` on a primary key and a check that one row changed. The store only needs to remember a nonce for about 65 seconds.
 
-`extract_token(content_type, body)` (`extractToken` in Node) reads the token from either body the snippet sends, JSON `{"token": "..."}` or a form field named `token`.
+`extract_token(content_type, body)` (`extractToken` in Node) reads the token from either body the snippet sends, JSON `{"token": "..."}` or a form field named `token`. A body over 16 KiB (`MAX_BODY`), a token over 4096 characters (`MAX_TOKEN`), or a body that does not parse, deeply nested JSON included, is `malformed`. Cap the request body at `MAX_BODY` before you read it.
 
 ## The snippet
 
