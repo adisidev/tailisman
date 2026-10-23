@@ -1,5 +1,13 @@
 # tailisman
 
+To set it up with a coding agent (Claude Code, Codex, Cursor, Copilot, Gemini CLI, or another), open the agent in your own project or home directory and type this.
+
+```
+Lock my personal pages with adisidev/tailisman
+```
+
+An agent reading this follows [skills/tailisman/SKILL.md](skills/tailisman/SKILL.md) (raw: https://raw.githubusercontent.com/adisidev/tailisman/main/skills/tailisman/SKILL.md) from step 1. It is also an installable skill, `npx skills add adisidev/tailisman`.
+
 tailisman lets a public web app learn that the visitor's browser runs on one of your own tailnet devices.
 
 There are two ways to use it.
