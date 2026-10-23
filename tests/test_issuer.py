@@ -210,7 +210,17 @@ def test_start_renders_a_self_submitting_form_to_return_to(issuer):
     assert "<button type=submit>" in page
 
 
-@pytest.mark.parametrize("return_to", ["https://evil.example.com/auth", "javascript:alert(1)", "/auth/tailisman", ""])
+@pytest.mark.parametrize("return_to", [
+    "https://evil.example.com/auth",
+    "javascript:alert(1)",
+    "/auth/tailisman",
+    "",
+    "https://heckle.example.com@evil.example/",
+    "http://heckle.example.com/auth/tailisman",
+    "https://heckle.example.com\\@evil.example",
+    "https://heckle.example.com:8443/auth/tailisman",
+    "//heckle.example.com/auth/tailisman",
+])
 def test_start_refuses_return_to_outside_the_audiences(issuer, return_to):
     response, body = issuer.request("GET", f"/v1/start?return_to={quote(return_to)}")
     assert response.status == 403
