@@ -23,6 +23,7 @@ SESSION_HEADER = "X-Tailisman-Session"
 USER_HEADER = "X-Tailisman-User"
 CONNECT_TIMEOUT = 10
 CHUNK = 64 * 1024
+MAX_TRAILERS = 32
 Headers = tuple[tuple[str, str], ...]
 
 _HOP_BY_HOP = frozenset({"connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade"})
@@ -177,9 +178,10 @@ def _read_chunks(rfile) -> Iterator[bytes]:
         except ValueError:
             raise BadRequest("malformed chunk size") from None
         if size == 0:
-            while rfile.readline(8192) not in (b"\r\n", b"\n", b""):
-                pass
-            return
+            for _ in range(MAX_TRAILERS + 1):
+                if rfile.readline(8192) in (b"\r\n", b"\n", b""):
+                    return
+            raise BadRequest("too many trailer lines")
         while size:
             piece = rfile.read(min(size, CHUNK))
             if not piece:

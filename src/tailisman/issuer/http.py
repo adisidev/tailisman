@@ -27,6 +27,7 @@ SUBMIT_SCRIPT = "document.forms[0].submit()"
 SUBMIT_SCRIPT_HASH = base64.b64encode(hashlib.sha256(SUBMIT_SCRIPT.encode()).digest()).decode()
 Issue = Callable[[Grant, int], str]
 PAGE_CSP = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+HEADER_TIMEOUT = 60
 
 
 @dataclasses.dataclass(frozen=True)
@@ -180,6 +181,7 @@ def handler_for(app: IssuerApp) -> type[http.server.BaseHTTPRequestHandler]:
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "tailisman"
         sys_version = ""
+        timeout = HEADER_TIMEOUT
 
         def _dispatch(self) -> None:
             response, outcome = app.respond(self.command, self.path, self.headers)

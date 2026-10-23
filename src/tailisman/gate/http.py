@@ -22,6 +22,7 @@ from .. import MAX_BODY, TailismanError, extract_token
 from .._token import normalise_origin
 from ..issuer.config import ConfigError
 from ..issuer.decision import Grant, Whois
+from ..issuer import http as issuer_http
 from ..issuer.http import IssuerApp, Response
 from .codes import CodeBook, Device
 from .config import GateConfig, Site, host_without_port
@@ -357,6 +358,12 @@ def handler_for(app: GateApp) -> type[http.server.BaseHTTPRequestHandler]:
         server_version = "tailisman-gate"
         sys_version = ""
         protocol_version = "HTTP/1.1"
+        timeout = issuer_http.HEADER_TIMEOUT
+
+        def handle_one_request(self) -> None:
+            """Every request line and header block on a connection gets the timeout, keep-alive waits included; an allowed proxied request clears it."""
+            self.connection.settimeout(self.timeout)
+            super().handle_one_request()
 
         def _dispatch(self) -> None:
             site = app.proxy_site(self.path, self.headers)
@@ -381,6 +388,7 @@ def handler_for(app: GateApp) -> type[http.server.BaseHTTPRequestHandler]:
         def _proxy(self, site: Site) -> None:
             decision = app.check(GateRequest.from_request(self.command, self.path, self.headers))
             if isinstance(decision, Allow):
+                self.connection.settimeout(None)
                 _log(app.note_upstream(site, relay(self, site.upstream, identity_headers(decision))))
                 return
             self._skip_small_body()

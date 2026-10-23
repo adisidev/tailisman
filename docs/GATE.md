@@ -107,6 +107,7 @@ What the proxy handles, each checked by `e2e/gate_proxy_e2e.py` against a real a
 
 - Request and response bodies stream through without being held in memory. Uploads of any size (Content-Length or chunked) reach the app as they arrive, with no limit from the gate. Answers of unknown length, chunked answers and server-sent events reach the browser as the app sends them, and Range requests get the app's 206 and `Content-Range`.
 - Long polls wait as long as the app takes. The connect timeout is 10 seconds, and there is no read timeout once connected.
+- A client has 60 seconds for each read of a request line or header block, on the public and the tailnet listener alike, and an idle keep-alive connection closes after 60 seconds. The timeout is lifted once a proxied request is allowed, so long polls, event streams, uploads and websockets are not cut off. A chunked upload may end with at most 32 trailer lines.
 - Websockets. An allowed `Upgrade: websocket` request goes on to the app, and after its 101 the gate copies bytes both ways until either side closes. An anonymous upgrade gets 401, and an upgrade with a body gets 400. When the app answers the upgrade with anything but a 101 to websocket, the gate relays that answer and closes the connection, so nothing the client sent behind the upgrade reaches the app unjudged.
 - HTTP/1.1 keep-alive towards the tunnel, HEAD, 204 and 304.
 - When the app is down, 502 with a short text body. The gate logs that once, and once more when the app answers again.
