@@ -102,6 +102,7 @@ class App(http.server.BaseHTTPRequestHandler):
             "/cache-public": lambda: self._send(200, b"cached", (("Cache-Control", "public, max-age=60"),)),
             "/cookies": lambda: self._send(200, b"two", (("Set-Cookie", "a=1; Path=/"), ("Set-Cookie", "b=2; Path=/"))),
             "/ws": self._websocket,
+            "/public/gone": lambda: self._send(404, b"gone"),
         }.get(path, self._echo)
         handler()
 
@@ -401,6 +402,27 @@ def run(stack: Stack) -> int:
     closing = ws_read(stream)
     sock.close()
     c.check("a signed-in websocket gets 101, the app's first frame, both echoes (5 B and 100 kB) and the close", status == 101 and accepted and welcome == (1, b"welcome") and echoes == [(1, b"hello"), (1, big)] and closing[0] == 8, (status, accepted, welcome, [(op, len(p)) for op, p in echoes], closing[0]))
+
+    def raw(data: bytes) -> tuple[bytes, bool]:
+        sock = socket.create_connection(("127.0.0.1", port), timeout=3)
+        sock.sendall(data)
+        answer, closed = b"", False
+        try:
+            while piece := sock.recv(65536):
+                answer += piece
+            closed = True
+        except TimeoutError:
+            pass
+        sock.close()
+        return answer, closed
+
+    STATE.paths.clear()
+    upgrade = f"Host: {APP}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {base64.b64encode(os.urandom(16)).decode()}\r\nSec-WebSocket-Version: 13\r\n"
+    answer, closed = raw(f"GET /public/gone HTTP/1.1\r\n{upgrade}\r\nGET /secret HTTP/1.1\r\nHost: {APP}\r\nX-Tailisman-Session: password\r\n\r\n".encode())
+    c.check("an upgrade on an open path the app answers with a keep-alive 404 is relayed and closed, and a request pipelined behind it never reaches the app", answer.startswith(b"HTTP/1.1 404") and answer.count(b"HTTP/1.1 ") == 1 and closed and STATE.paths == ["/public/gone"], (answer[:200], closed, STATE.paths))
+    STATE.paths.clear()
+    answer, closed = raw(f"GET /public/x HTTP/1.1\r\n{upgrade}Content-Length: 5\r\n\r\nhello".encode())
+    c.check("an upgrade request with a body is refused with 400 and never reaches the app", answer.startswith(b"HTTP/1.1 400") and closed and STATE.paths == [], (answer[:80], closed, STATE.paths))
 
     added = stack.tailisman("passwd", "--config", str(d / "gate.toml"), "--add", "visitor", "--sites", APP)
     guest = sign_in((d / "guests" / "visitor").read_text().strip(), ip="198.51.100.2")

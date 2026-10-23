@@ -2,7 +2,7 @@
 
 For a tunnel (cloudflared) that terminates TLS but cannot ask the gate first. Bodies stream both ways without buffering:
 uploads of any size, chunked and unknown-length answers, server-sent events, long polls with no read timeout, and
-websockets, which are spliced byte for byte once the request has been allowed.
+websockets, which are spliced byte for byte once the request has been allowed and the app has answered 101.
 """
 
 from __future__ import annotations
@@ -111,6 +111,9 @@ def relay(handler: http.server.BaseHTTPRequestHandler, upstream: Upstream, ident
         handler.send_error(400, str(exc))
         return None
     websocket = is_websocket(handler.headers)
+    if websocket and body is not None:
+        handler.send_error(400, "a websocket upgrade has no body")
+        return None
     headers = upstream_headers(handler.headers, identity, handler.client_address[0], body, websocket)
     try:
         sock = socket.create_connection((upstream.host, upstream.port), timeout=CONNECT_TIMEOUT)
@@ -119,8 +122,7 @@ def relay(handler: http.server.BaseHTTPRequestHandler, upstream: Upstream, ident
         return str(exc)
     sock.settimeout(None)
     if websocket:
-        _splice_websocket(handler, sock, headers)
-        return None
+        return _upgrade(handler, sock, headers)
     conn = http.client.HTTPConnection(upstream.host, upstream.port)
     conn.sock = sock
     try:
@@ -189,7 +191,7 @@ def _answer(handler: http.server.BaseHTTPRequestHandler, response: http.client.H
             handler.send_header(name, value)
     if rechunk:
         handler.send_header("Transfer-Encoding", "chunked")
-    elif not no_body and response.length is None:
+    if handler.close_connection or (not rechunk and not no_body and response.length is None):
         handler.send_header("Connection", "close")
     handler.end_headers()
     if no_body:
@@ -200,11 +202,39 @@ def _answer(handler: http.server.BaseHTTPRequestHandler, response: http.client.H
         handler.wfile.write(b"0\r\n\r\n")
 
 
-def _splice_websocket(handler: http.server.BaseHTTPRequestHandler, sock: socket.socket, headers: list[tuple[str, str]]) -> None:
-    """Sends the upgrade on and then copies bytes both ways, the app's 101 included, until either side closes."""
+def _upgrade(handler: http.server.BaseHTTPRequestHandler, sock: socket.socket, headers: list[tuple[str, str]]) -> str | None:
+    """Sends the upgrade on and reads the app's answer. Only a 101 to websocket is spliced; any other answer is relayed and both connections close, since bytes the client pipelined behind the upgrade were never judged by the gate."""
     handler.close_connection = True
     head = f"{handler.command} {handler.path} HTTP/1.1\r\n" + "".join(f"{name}: {value}\r\n" for name, value in headers) + "\r\n"
-    client = handler.connection
+    try:
+        sock.sendall(head.encode("latin-1"))
+        response = http.client.HTTPResponse(sock, method=handler.command)
+        response.begin()
+    except (OSError, http.client.HTTPException) as exc:
+        sock.close()
+        _bad_gateway(handler)
+        return f"upgrade failed: {exc}"
+    try:
+        if response.status != 101:
+            _answer(handler, response)
+        elif (response.getheader("Upgrade") or "").strip().lower() != "websocket":
+            _bad_gateway(handler)
+            return f"the app switched to {response.getheader('Upgrade')!r}, not websocket"
+        else:
+            handler.send_response_only(101, response.reason)
+            for name, value in response.getheaders():
+                handler.send_header(name, value)
+            handler.end_headers()
+            _splice(handler.connection, handler.rfile, sock, response.fp)
+    except (OSError, http.client.HTTPException):
+        pass
+    finally:
+        sock.close()
+    return None
+
+
+def _splice(client: socket.socket, client_in, upstream: socket.socket, upstream_in) -> None:
+    """Copies bytes both ways, the app's already-buffered first frames included, until either side closes."""
 
     def pump(source, target: socket.socket) -> None:
         try:
@@ -213,21 +243,16 @@ def _splice_websocket(handler: http.server.BaseHTTPRequestHandler, sock: socket.
         except OSError:
             pass
         finally:
-            for end in (client, sock):
+            for end in (client, upstream):
                 try:
                     end.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
 
-    try:
-        sock.sendall(head.encode("latin-1"))
-        upstream = sock.makefile("rb")
-        other = threading.Thread(target=pump, args=(handler.rfile, sock), daemon=True)
-        other.start()
-        pump(upstream, client)
-        other.join()
-    finally:
-        sock.close()
+    other = threading.Thread(target=pump, args=(client_in, upstream), daemon=True)
+    other.start()
+    pump(upstream_in, client)
+    other.join()
 
 
 def _bad_gateway(handler: http.server.BaseHTTPRequestHandler) -> None:
