@@ -285,10 +285,10 @@ def run(stack: Stack) -> int:
     poller = threading.Thread(target=long_poll, daemon=True)
     poller.start()
 
-    r = send("GET", "/echo?q=1", headers=cookie(owner, "; theme=dark; tailisman_csrf=" + "A" * 32) | {"X-Tailisman-Session": "forged", "X-Tailisman-User": "forged", "X-Forwarded-For": "203.0.113.5"})
+    r = send("GET", "/echo?q=1", headers=cookie(owner, "; theme=dark; tailisman_csrf=" + "A" * 32) | {"X-Tailisman-Session": "forged", "X-Tailisman-User": "forged", "X_Tailisman_Session": "forged", "X-Forwarded-For": "203.0.113.5"})
     seen = r.json()["headers"] if r.status == 200 else {}
     c.check("the app sees the request with the gate's cookies removed and the others kept", r.status == 200 and r.json()["path"] == "/echo?q=1" and seen.get("cookie") == ["theme=dark"], seen.get("cookie"))
-    c.check("the app sees X-Tailisman-Session password and no client-sent X-Tailisman-User", seen.get("x-tailisman-session") == ["password"] and "x-tailisman-user" not in seen, (seen.get("x-tailisman-session"), seen.get("x-tailisman-user")))
+    c.check("the app sees X-Tailisman-Session password, no client-sent X-Tailisman-User and no underscore look-alike", seen.get("x-tailisman-session") == ["password"] and "x-tailisman-user" not in seen and not any("_" in name for name in seen), (seen.get("x-tailisman-session"), seen.get("x-tailisman-user"), sorted(seen)))
     c.check("Host is kept and X-Forwarded-For/Proto/Host are set", seen.get("host") == [APP] and seen.get("x-forwarded-for") == ["203.0.113.5, 127.0.0.1"] and seen.get("x-forwarded-proto") == ["https"] and seen.get("x-forwarded-host") == [APP], {k: seen.get(k) for k in ("host", "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host")})
     c.check("a gated answer with no Cache-Control is marked private", r.header("Cache-Control") == "private", r.header("Cache-Control"))
     r = send("GET", "/echo", headers=cookie(owner) | {"X-Forwarded-Proto": "http"})

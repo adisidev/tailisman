@@ -8,8 +8,6 @@ from tailisman.gate.decision import GateRequest
 from tailisman.gate.proxy import body_length, client_headers, is_websocket, upstream_headers
 
 
-
-
 def config_with(tmp_path, upstream):
     (tmp_path / "gate-secret").write_bytes(SECRET)
     raw = {"session_secret_file": "gate-secret", "password_file": "p", "sites": [{"host": "app.example.com", "upstream": upstream}]}
@@ -98,3 +96,10 @@ def test_client_headers_apply_the_private_cache_rule_and_keep_set_cookie_lines()
     assert client_headers([("Cache-Control", "no-store")]) == [("Cache-Control", "no-store")]
     kept = client_headers([("Set-Cookie", "a=1"), ("Set-Cookie", "b=2"), ("Connection", "close, X-Hop"), ("X-Hop", "1"), ("Transfer-Encoding", "chunked"), ("Keep-Alive", "5"), ("Cache-Control", "no-cache")])
     assert kept == [("Set-Cookie", "a=1"), ("Set-Cookie", "b=2"), ("Cache-Control", "no-cache")]
+
+
+def test_upstream_headers_drop_every_name_with_an_underscore():
+    sent = headers({"Host": "a.example.com", "X_Tailisman_Session": "password", "x_tailisman_user": "owner", "X_Forwarded_For": "203.0.113.9", "Accept_Language": "en", "Accept": "text/html"})
+    forwarded = upstream_headers(sent, (("X-Tailisman-Session", "password"),), "127.0.0.1", None, websocket=False)
+    assert [name for name, _ in forwarded] == ["Host", "Accept", "X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Tailisman-Session"]
+

@@ -66,12 +66,12 @@ def body_length(headers: Message) -> int | str | None:
 
 
 def upstream_headers(headers: Message, identity: Headers, peer: str, body: int | str | None, websocket: bool) -> list[tuple[str, str]]:
-    """The client's headers minus hop-by-hop ones, the gate's cookies and any client-sent identity, plus the gate's own."""
+    """The client's headers minus hop-by-hop ones, the gate's cookies and any client-sent identity, plus the gate's own. A name with an underscore is dropped, as nginx and Caddy do: CGI, WSGI and PHP fold _ and - together, so X_Tailisman_Session would reach the app as the identity header."""
     dropped = _HOP_BY_HOP | _SET_BY_GATE | set(_tokens(headers.get_all("Connection") or []))
     sent = []
     for name, value in headers.items():
         lowered = name.lower()
-        if lowered in dropped or lowered.startswith("proxy-"):
+        if lowered in dropped or lowered.startswith("proxy-") or "_" in lowered:
             continue
         if lowered == "cookie":
             value = "; ".join(part.strip() for part in value.split(";") if part.strip() and part.strip().partition("=")[0] not in _GATE_COOKIES)
