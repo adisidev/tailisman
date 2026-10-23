@@ -2,8 +2,9 @@
 
     uv run python e2e/fake_serve.py --listen 127.0.0.1:8443 --backend 127.0.0.1:8470 --peer 192.0.2.1 --login owner@example.com
 
-Like serve, it drops any client-sent X-Forwarded-* and Tailscale-* headers. It speaks plain HTTP, so it only
-stands in for serve on loopback; it is not a security boundary.
+Like serve, it drops any client-sent X-Forwarded-* and Tailscale-* headers and passes Host through, so the issuer's
+config needs serve_host = "127.0.0.1" (or whatever name the browser uses) for a local run. It speaks plain HTTP, so it
+only stands in for serve on loopback; it is not a security boundary.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import http.client
 import http.server
 
 DROP = ("x-forwarded-", "tailscale-")
-HOP = {"connection", "keep-alive", "transfer-encoding", "host", "content-length"}
+HOP = {"connection", "keep-alive", "transfer-encoding", "content-length"}
 
 
 def main() -> None:

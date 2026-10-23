@@ -143,13 +143,14 @@ The snippet sends `a=1` when it sees cheap signs of automation: `navigator.webdr
 | `listen` | `"127.0.0.1:8470"` | A loopback address and port, or `"unix:/absolute/path"`. Anything else is a config error. |
 | `ttl_seconds` | `60` | Token lifetime, 10 to 300. |
 | `tailscale_bin` | `"auto"` | `auto` tries `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, then `tailscale` on PATH. |
+| `serve_host` | this node's MagicDNS name | The only `Host` (and `X-Forwarded-Host`) the issuer answers, such as `issuer.example-tailnet.ts.net`. Left out, the issuer reads `Self.DNSName` from `tailscale status --json` once at startup and refuses to start if it cannot. |
 | `devices` | `[]` | Default allowlist. An entry matches a node by stable ID (exact), short name, or MagicDNS name with or without the trailing dot. |
 | `[[audiences]] origin` | required | The consumer's origin. This one list is the CORS allowlist, the `return_to` allowlist and the set of keys. |
 | `[[audiences]] devices` | top-level `devices` | Replaces the default allowlist for this origin. |
 | `[[audiences]] users` | any user | Logins allowed on this origin. |
 | `[[audiences]] refuse_automation` | `false` | Refuse requests with `a=1` or a `HeadlessChrome` user agent. |
 
-The issuer refuses with one of these codes, checked in this order: `not_behind_serve` (421), `funnel_request`, `unknown_audience`, `unknown_peer`, `tagged_node`, `identity_mismatch`, `not_on_allowlist`, `user_not_allowed`, `automation` (all 403). Tagged nodes are always refused.
+The issuer refuses with one of these codes, checked in this order: `wrong_host` (421), `not_behind_serve` (421), `funnel_request`, `unknown_audience`, `unknown_peer`, `tagged_node`, `identity_mismatch`, `not_on_allowlist`, `user_not_allowed`, `automation` (all 403). Tagged nodes are always refused.
 
 ### Routes
 
@@ -159,7 +160,7 @@ The issuer refuses with one of these codes, checked in this order: `not_behind_s
 
 ### Listening on loopback or a unix socket
 
-With loopback TCP, any process on the issuer host can connect to the issuer, send its own `X-Forwarded-For` and mint a token for any allowlisted device. The issuer host's local users are therefore trusted. A unix socket at mode 0660 limits that to the socket's owner and group: set `listen = "unix:/run/tailisman/issuer.sock"` and run `tailscale serve --bg --https=8443 unix:/run/tailisman/issuer.sock`. Under the macOS Tailscale app, serve answered 502 for a unix socket target, because its network extension cannot reach the socket. On Linux it is expected to work but has not been measured.
+With loopback TCP, any process on the issuer host can connect to the issuer, send its own `X-Forwarded-For` and mint a token for any allowlisted device. The issuer host's local users are therefore trusted. A web page is not one of those local users. A page open in a browser on the issuer host could point its own name at 127.0.0.1 (DNS rebinding) and then reach the issuer as same-origin, forged headers included, but its `Host` header stays its own name. The issuer answers only requests whose `Host` is its serve name (`serve_host`), port and case ignored, and refuses everything else as `wrong_host`. `/healthz` answers any host. A unix socket at mode 0660 limits that to the socket's owner and group: set `listen = "unix:/run/tailisman/issuer.sock"` and run `tailscale serve --bg --https=8443 unix:/run/tailisman/issuer.sock`. Under the macOS Tailscale app, serve answered 502 for a unix socket target, because its network extension cannot reach the socket. On Linux it is expected to work but has not been measured.
 
 ## Automation refusal is best effort
 
@@ -223,6 +224,7 @@ The snippet passes `targetAddressSpace: "local"` to `fetch`. Chrome fails the fe
 
 - The device allowlist is the real control. Anything that runs on an allowlisted device can get a token. A script or AI agent on your laptop can call the issuer with any `Origin` header it likes (curl can), get a token, and sign in to your site as you. tailisman cannot tell your browser from your agent on the same machine. Keep the allowlist to devices where that is acceptable.
 - The automation refusal is a speed bump. With `refuse_automation = true`, a default Playwright Chrome was refused as `automation`. The same browser with `navigator.webdriver` overridden, Playwright's globals removed and a normal user agent signed in. That took three lines.
+- DNS rebinding. Without a host check, a page in a browser on the issuer host could rebind its own name to 127.0.0.1, send its own `X-Forwarded-For` and read a token. The issuer refuses any request whose `Host` or `X-Forwarded-Host` is not its serve name, as `wrong_host`, before any other check. Run `tailisman check` to confirm the name serve uses is the one the issuer expects.
 - Loopback TCP trusts every local user of the issuer host, as described above. A unix socket narrows this on Linux but does not work under the macOS Tailscale app.
 - Each consumer's key can sign tokens for that consumer. That is no worse than the consumer itself being compromised, since it controls its own sessions. The master secret stays on the issuer host.
 - A token is a bearer token for up to 60 seconds. The verifier refuses a second use of the same nonce, but only within one replay store. A server with several processes needs a shared store.

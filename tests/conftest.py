@@ -9,12 +9,14 @@ from pathlib import Path
 
 import pytest
 
+from tailisman.issuer.cli import app_for
 from tailisman.issuer.config import load_config
-from tailisman.issuer.http import IssuerApp, make_server
-from tailisman.issuer.whois import cli_whois
+from tailisman.issuer.http import make_server
 
 ROOT = Path(__file__).resolve().parent.parent
 FAKE_TAILSCALE = str(ROOT / "e2e" / "fake_tailscale.py")
+SERVE_HOST = "issuer.example-tailnet.ts.net"
+SERVE_HOST_HEADER = f"{SERVE_HOST}:8443"
 
 
 def node(ip, stable_id, name, login, tags=None):
@@ -60,12 +62,13 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
-def write_issuer_dir(directory: Path, listen=None, serve_status=None) -> Path:
+def write_issuer_dir(directory: Path, listen=None, serve_status=None, status=None, extra="") -> Path:
     listen = listen or f"127.0.0.1:{free_port()}"
+    status = {"Self": {"DNSName": SERVE_HOST + "."}} if status is None else status
     (directory / "secret").write_bytes(bytes(range(32)))
-    (directory / "state.json").write_text(json.dumps({"whois": PEERS, "serve_status": serve_status or {}}))
+    (directory / "state.json").write_text(json.dumps({"whois": PEERS, "status": status, "serve_status": serve_status or {}}))
     config = directory / "issuer.toml"
-    config.write_text(CONFIG.format(listen=listen, tailscale_bin=FAKE_TAILSCALE))
+    config.write_text(extra + CONFIG.format(listen=listen, tailscale_bin=FAKE_TAILSCALE))
     return config
 
 
@@ -80,14 +83,14 @@ def issuer_dir(tmp_path_factory):
 class Issuer:
     def __init__(self, config_path: Path):
         self.config = load_config(config_path)
-        self.app = IssuerApp(self.config, cli_whois(self.config.tailscale_bin))
+        self.app = app_for(self.config)
         self.server = make_server(self.app)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def request(self, method, path, peer="192.0.2.1", origin=None, headers=None, serve=True, login=None):
         sent = {}
         if serve:
-            sent.update({"X-Forwarded-For": peer, "X-Forwarded-Proto": "https"})
+            sent.update({"Host": SERVE_HOST_HEADER, "X-Forwarded-Host": SERVE_HOST_HEADER, "X-Forwarded-For": peer, "X-Forwarded-Proto": "https"})
             ip, raw = peer, PEERS.get(peer)
             if raw and not raw["Node"]["Tags"]:
                 sent["Tailscale-User-Login"] = login or raw["UserProfile"]["LoginName"]

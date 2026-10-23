@@ -7,7 +7,7 @@ from tailisman.issuer.cli import main
 
 from conftest import write_issuer_dir
 
-WEB_HOST = "laptop.example-tailnet.ts.net:8443"
+WEB_HOST = "issuer.example-tailnet.ts.net:8443"
 
 
 def test_keygen_writes_a_private_secret_and_refuses_to_overwrite(tmp_path, capsys):
@@ -33,11 +33,11 @@ def test_key_refuses_an_unconfigured_audience(issuer_dir, capsys):
     assert "not a configured audience" in capsys.readouterr().err
 
 
-def serve_status(port, funnel):
+def serve_status(port, funnel, web_host=WEB_HOST):
     return {
         "TCP": {"8443": {"HTTPS": True}},
-        "Web": {WEB_HOST: {"Handlers": {"/": {"Proxy": f"http://127.0.0.1:{port}"}}}},
-        "AllowFunnel": {WEB_HOST: True} if funnel else {},
+        "Web": {web_host: {"Handlers": {"/": {"Proxy": f"http://127.0.0.1:{port}"}}}},
+        "AllowFunnel": {web_host: True} if funnel else {},
     }
 
 
@@ -60,3 +60,8 @@ def test_check_fails_when_funnel_is_on(tmp_path, monkeypatch, capsys):
 def test_check_fails_when_nothing_proxies_to_the_issuer(tmp_path, monkeypatch, capsys):
     assert run_check(tmp_path, monkeypatch, lambda port: serve_status(port + 1, funnel=False)) == 1
     assert "no serve handler proxies to http://127.0.0.1:8470" in capsys.readouterr().err
+
+
+def test_check_fails_when_serve_uses_another_name_than_the_issuer_accepts(tmp_path, monkeypatch, capsys):
+    assert run_check(tmp_path, monkeypatch, lambda port: serve_status(port, funnel=False, web_host="laptop.example-tailnet.ts.net:8443")) == 1
+    assert "only answers Host issuer.example-tailnet.ts.net" in capsys.readouterr().err

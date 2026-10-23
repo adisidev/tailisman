@@ -8,7 +8,10 @@ import pytest
 from tailisman import Verifier
 from tailisman._token import derive_consumer_key, format_key
 
-from conftest import Issuer, UnixHTTPConnection, write_issuer_dir
+from tailisman.issuer.cli import app_for
+from tailisman.issuer.config import ConfigError, load_config
+
+from conftest import SERVE_HOST, SERVE_HOST_HEADER, Issuer, UnixHTTPConnection, write_issuer_dir
 
 HECKLE = "https://heckle.example.com"
 NOTES = "https://notes.example.com"
@@ -90,11 +93,67 @@ def test_requests_not_from_serve_get_421(issuer, headers):
 
 def test_repeated_forwarded_for_headers_get_421(issuer):
     conn = issuer.connect()
-    conn.putrequest("GET", "/v1/claim")
-    for name, value in [("Origin", HECKLE), ("X-Forwarded-Proto", "https"), ("X-Forwarded-For", "192.0.2.1"), ("X-Forwarded-For", "192.0.2.2")]:
+    conn.putrequest("GET", "/v1/claim", skip_host=True)
+    for name, value in [("Host", SERVE_HOST_HEADER), ("Origin", HECKLE), ("X-Forwarded-Proto", "https"), ("X-Forwarded-For", "192.0.2.1"), ("X-Forwarded-For", "192.0.2.2")]:
         conn.putheader(name, value)
     conn.endheaders()
-    assert conn.getresponse().status == 421
+    response = conn.getresponse()
+    assert (response.status, json.loads(response.read())) == (421, {"error": "not_behind_serve"})
+
+
+REBOUND = "attacker.example:8443"
+
+
+@pytest.mark.parametrize("path", ["/v1/claim", f"/v1/start?return_to={quote(HECKLE + '/auth')}", "/"])
+@pytest.mark.parametrize("headers", [
+    {"Host": REBOUND, "X-Forwarded-Host": None},
+    {"Host": REBOUND},
+    {"X-Forwarded-Host": REBOUND},
+    {"Host": "127.0.0.1:8470", "X-Forwarded-Host": None},
+    {"Host": f"{SERVE_HOST}.attacker.example"},
+    {"Host": f"x@{SERVE_HOST}"},
+])
+def test_a_request_for_any_other_host_is_refused(issuer, path, headers):
+    response, body = issuer.request("GET", path, origin=HECKLE, headers=headers)
+    assert response.status == 421 and b"wrong_host" in body and b"tsm1." not in body
+
+
+@pytest.mark.parametrize("host", [SERVE_HOST, SERVE_HOST.upper() + ":443", SERVE_HOST + ".:8443"])
+def test_the_serve_host_matches_without_case_or_port(issuer, host):
+    response, _ = claim(issuer, headers={"Host": host, "X-Forwarded-Host": host})
+    assert response.status == 200
+
+
+def test_x_forwarded_host_is_optional(issuer):
+    assert claim(issuer, headers={"X-Forwarded-Host": None})[0].status == 200
+
+
+def test_missing_or_repeated_host_is_refused(issuer):
+    for hosts in ([], [SERVE_HOST_HEADER, SERVE_HOST_HEADER]):
+        conn = issuer.connect()
+        conn.putrequest("GET", "/v1/claim", skip_host=True)
+        for name, value in [("Origin", HECKLE), ("X-Forwarded-Proto", "https"), ("X-Forwarded-For", "192.0.2.1")] + [("Host", h) for h in hosts]:
+            conn.putheader(name, value)
+        conn.endheaders()
+        response = conn.getresponse()
+        assert (response.status, json.loads(response.read())) == (421, {"error": "wrong_host"})
+
+
+def test_wrong_host_comes_before_every_other_refusal(issuer):
+    assert claim(issuer, origin="https://evil.example.com", headers={"Host": REBOUND, "X-Forwarded-For": None})[1] == {"error": "wrong_host"}
+
+
+def test_healthz_answers_any_host(issuer):
+    assert issuer.request("GET", "/healthz", headers={"Host": REBOUND})[0].status == 200
+
+
+def test_serve_host_comes_from_tailscale_status_or_the_config(short_tmp, monkeypatch):
+    monkeypatch.setenv("FAKE_TAILSCALE_STATE", str(short_tmp / "state.json"))
+    assert app_for(load_config(write_issuer_dir(short_tmp, status={"Self": {"DNSName": "Issuer.Example-Tailnet.ts.net."}}))).serve_host == SERVE_HOST
+    configured = write_issuer_dir(short_tmp, status={}, extra='serve_host = "other.example-tailnet.ts.net."\n')
+    assert app_for(load_config(configured)).serve_host == "other.example-tailnet.ts.net"
+    with pytest.raises(ConfigError, match="set serve_host"):
+        app_for(load_config(write_issuer_dir(short_tmp, status={})))
 
 
 def test_funnel_traffic_is_refused(issuer):
@@ -213,7 +272,7 @@ def test_unix_socket_listener(short_tmp, monkeypatch):
     try:
         assert stat.S_IMODE(os.stat(sock).st_mode) == 0o660
         conn = UnixHTTPConnection(str(sock))
-        conn.request("GET", "/v1/claim", headers={"Origin": HECKLE, "X-Forwarded-For": "192.0.2.1", "X-Forwarded-Proto": "https"})
+        conn.request("GET", "/v1/claim", headers={"Host": SERVE_HOST_HEADER, "Origin": HECKLE, "X-Forwarded-For": "192.0.2.1", "X-Forwarded-Proto": "https"})
         response = conn.getresponse()
         assert response.status == 200 and json.loads(response.read())["token"].startswith("tsm1.")
     finally:

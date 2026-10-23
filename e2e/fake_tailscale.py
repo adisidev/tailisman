@@ -2,7 +2,7 @@
 """Stands in for the tailscale CLI in tests and local demos. Never talks to a tailnet.
 
 Reads the JSON file named by FAKE_TAILSCALE_STATE:
-  {"whois": {"192.0.2.1": <whois --json output>}, "serve_status": {...}, "serve_status_text": "..."}
+  {"whois": {"192.0.2.1": <whois --json output>}, "status": {"Self": {"DNSName": "..."}}, "serve_status": {...}, "serve_status_text": "..."}
 """
 import json
 import os
@@ -16,6 +16,8 @@ if args[:2] == ["whois", "--json"] and len(args) == 3:
         sys.stderr.write("peer not found\n")
         sys.exit(1)
     print(json.dumps(peer))
+elif args == ["status", "--json"]:
+    print(json.dumps(state.get("status", {})))
 elif args == ["serve", "status", "--json"]:
     print(json.dumps(state.get("serve_status", {})))
 elif args == ["serve", "status"]:

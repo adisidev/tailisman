@@ -62,6 +62,10 @@ def test_bad_origin_refused(tmp_path, origin):
     {"listen": 8470},
     {"tailscale_bin": ""},
     {"unknown": 1},
+    {"serve_host": "issuer.example-tailnet.ts.net:8443"},
+    {"serve_host": "https://issuer.example-tailnet.ts.net"},
+    {"serve_host": ""},
+    {"serve_host": 1},
 ])
 def test_invalid_configs_refused(tmp_path, overrides):
     with pytest.raises(ConfigError):

@@ -2,7 +2,8 @@
 
 Measured on Tailscale 1.102.4: serve replaces any client-sent X-Forwarded-For with exactly one value (the peer's
 tailnet IP) and Tailscale-User-Login with the real login; tagged nodes get no Tailscale-User-* headers; Funnel
-traffic carries Tailscale-Funnel-Request. Node identity comes only from `tailscale whois`.
+traffic carries Tailscale-Funnel-Request; Host and X-Forwarded-Host carry the name the browser asked for. Node
+identity comes only from `tailscale whois`.
 """
 
 from __future__ import annotations
@@ -14,12 +15,13 @@ from collections.abc import Callable
 from email.message import Message
 
 from .._token import Claim, derive_consumer_key, encode, new_nonce
-from .config import Audience, IssuerConfig
+from .config import Audience, IssuerConfig, host_name
 
 Whois = Callable[[str], dict | None]
 
 
 class RefusalCode(enum.StrEnum):
+    WRONG_HOST = "wrong_host"
     NOT_BEHIND_SERVE = "not_behind_serve"
     FUNNEL_REQUEST = "funnel_request"
     UNKNOWN_AUDIENCE = "unknown_audience"
@@ -31,7 +33,7 @@ class RefusalCode(enum.StrEnum):
     AUTOMATION = "automation"
 
 
-HTTP_STATUS = {code: 421 if code is RefusalCode.NOT_BEHIND_SERVE else 403 for code in RefusalCode}
+HTTP_STATUS = {code: 421 if code in (RefusalCode.WRONG_HOST, RefusalCode.NOT_BEHIND_SERVE) else 403 for code in RefusalCode}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -42,6 +44,8 @@ class Refusal:
 
 @dataclasses.dataclass(frozen=True)
 class ServeFacts:
+    hosts: tuple[str, ...]
+    forwarded_hosts: tuple[str, ...]
     proto: str | None
     forwarded_for: tuple[str, ...]
     funnel: bool
@@ -52,12 +56,20 @@ class ServeFacts:
     def from_headers(cls, headers: Message) -> ServeFacts:
         values = tuple(v.strip() for header in headers.get_all("X-Forwarded-For") or [] for v in header.split(","))
         return cls(
+            hosts=tuple(headers.get_all("Host") or []),
+            forwarded_hosts=tuple(headers.get_all("X-Forwarded-Host") or []),
             proto=headers.get("X-Forwarded-Proto"),
             forwarded_for=values,
             funnel="Tailscale-Funnel-Request" in headers,
             login=headers.get("Tailscale-User-Login"),
             user_agent=headers.get("User-Agent", ""),
         )
+
+    def asked_for(self, serve_host: str) -> bool:
+        """A rebinding page can point its own name at 127.0.0.1 and forge every other header, but its Host stays its own name."""
+        if len(self.hosts) != 1 or len(self.forwarded_hosts) > 1:
+            return False
+        return all(host_name(h) == serve_host for h in self.hosts + self.forwarded_hosts)
 
     def peer_ip(self) -> str | None:
         if self.proto != "https" or len(self.forwarded_for) != 1:
@@ -100,7 +112,9 @@ class Grant:
     peer: PeerIdentity
 
 
-def serve_refusal(facts: ServeFacts) -> Refusal | None:
+def serve_refusal(facts: ServeFacts, serve_host: str) -> Refusal | None:
+    if not facts.asked_for(serve_host):
+        return Refusal(RefusalCode.WRONG_HOST)
     if facts.peer_ip() is None:
         return Refusal(RefusalCode.NOT_BEHIND_SERVE)
     if facts.funnel:
@@ -113,8 +127,8 @@ def lookup_peer(facts: ServeFacts, whois: Whois) -> PeerIdentity | None:
     return PeerIdentity.from_whois(raw) if raw is not None else None
 
 
-def decide(facts: ServeFacts, origin: str | None, automation_reported: bool, config: IssuerConfig, whois: Whois) -> Grant | Refusal:
-    if refusal := serve_refusal(facts):
+def decide(facts: ServeFacts, origin: str | None, automation_reported: bool, config: IssuerConfig, whois: Whois, serve_host: str) -> Grant | Refusal:
+    if refusal := serve_refusal(facts, serve_host):
         return refusal
     audience = config.audiences.get(origin) if origin is not None else None
     if audience is None:

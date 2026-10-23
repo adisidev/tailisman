@@ -36,9 +36,10 @@ class Response:
 
 
 class IssuerApp:
-    def __init__(self, config: IssuerConfig, whois: Whois, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, config: IssuerConfig, whois: Whois, serve_host: str, clock: Callable[[], float] = time.time) -> None:
         self.config = config
         self.whois = whois
+        self.serve_host = serve_host
         self.clock = clock
 
     def respond(self, method: str, target: str, headers: Message) -> tuple[Response, Refusal | Grant | None]:
@@ -66,7 +67,7 @@ class IssuerApp:
 
     def _claim(self, headers: Message, query: dict) -> tuple[Response, Refusal | Grant]:
         origin = _origin_or_none(headers.get("Origin"))
-        outcome = decide(ServeFacts.from_headers(headers), origin, _automation(query), self.config, self.whois)
+        outcome = decide(ServeFacts.from_headers(headers), origin, _automation(query), self.config, self.whois, self.serve_host)
         cors = _cors_headers(origin) if origin in self.config.audiences else ()
         if isinstance(outcome, Refusal):
             return _json(HTTP_STATUS[outcome.code], {"error": outcome.code}, cors), outcome
@@ -75,7 +76,7 @@ class IssuerApp:
     def _start(self, headers: Message, query: dict) -> tuple[Response, Refusal | Grant]:
         return_to = _single(query, "return_to")
         origin = _origin_of_url(return_to) if return_to else None
-        outcome = decide(ServeFacts.from_headers(headers), origin, _automation(query), self.config, self.whois)
+        outcome = decide(ServeFacts.from_headers(headers), origin, _automation(query), self.config, self.whois, self.serve_host)
         if isinstance(outcome, Refusal):
             back = origin if origin in self.config.audiences else None
             return _refusal_page(outcome, back), outcome
@@ -92,7 +93,7 @@ class IssuerApp:
 
     def _status_page(self, headers: Message) -> Response:
         facts = ServeFacts.from_headers(headers)
-        if refusal := serve_refusal(facts):
+        if refusal := serve_refusal(facts, self.serve_host):
             return _refusal_page(refusal, None)
         raw = self.whois(facts.peer_ip())
         peer = lookup_peer(facts, lambda _ip: raw)
@@ -100,7 +101,7 @@ class IssuerApp:
             return _refusal_page(Refusal(RefusalCode.UNKNOWN_PEER), None)
         rows = [("Device", peer.node_name), ("MagicDNS name", peer.dns_name), ("Stable ID", peer.node_id), ("Login", peer.login), ("Tagged", ", ".join(peer.tags) or "no")]
         verdicts = {
-            origin: decide(facts, origin, False, self.config, lambda _ip: raw) for origin in self.config.audiences
+            origin: decide(facts, origin, False, self.config, lambda _ip: raw, self.serve_host) for origin in self.config.audiences
         }
         parts = ["<!doctype html><meta charset=utf-8><title>tailisman</title><h1>This device</h1><table>"]
         parts += [f"<tr><th>{html.escape(k)}<td>{html.escape(v)}" for k, v in rows]

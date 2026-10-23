@@ -10,9 +10,9 @@ import subprocess
 import sys
 
 from .._token import derive_consumer_key, format_key, normalise_origin
-from .config import ConfigError, IssuerConfig, TcpListen, UnixListen, load_config, resolve_tailscale_bin
+from .config import ConfigError, IssuerConfig, TcpListen, UnixListen, host_name, load_config, resolve_tailscale_bin
 from .http import IssuerApp, make_server
-from .whois import cli_whois
+from .tailscale import cli_self_dns_name, cli_whois
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,12 +59,17 @@ def _key(args: argparse.Namespace) -> int:
     return 0
 
 
+def app_for(config: IssuerConfig) -> IssuerApp:
+    binary = resolve_tailscale_bin(config.tailscale_bin)
+    return IssuerApp(config, cli_whois(binary), config.serve_host or cli_self_dns_name(binary))
+
+
 def _run(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    app = IssuerApp(config, cli_whois(resolve_tailscale_bin(config.tailscale_bin)))
+    app = app_for(config)
     server = make_server(app)
     target = config.listen.serve_target()
-    print(f"tailisman: listening on {target} for {', '.join(config.audiences)}", file=sys.stderr)
+    print(f"tailisman: listening on {target} for {', '.join(config.audiences)}, answering only Host {app.serve_host}", file=sys.stderr)
     print(f"tailisman: front it with `tailscale serve --bg --https=8443 {target}` and never with Funnel", file=sys.stderr)
     try:
         server.serve_forever()
@@ -94,6 +99,10 @@ def _check(args: argparse.Namespace) -> int:
     hosts = _hosts_proxying_to(serve, config)
     if not hosts:
         print(f"check: no serve handler proxies to {config.listen.serve_target()}; run `tailscale serve --bg --https=8443 {config.listen.serve_target()}`", file=sys.stderr)
+        return 1
+    serve_host = config.serve_host or cli_self_dns_name(binary)
+    if not any(host_name(h) == serve_host for h in hosts):
+        print(f"check: the issuer only answers Host {serve_host}, but serve fronts it as {', '.join(hosts)}; set serve_host to the name serve uses", file=sys.stderr)
         return 1
     funnel = [h for h in hosts if (serve.get("AllowFunnel") or {}).get(h)]
     if funnel:

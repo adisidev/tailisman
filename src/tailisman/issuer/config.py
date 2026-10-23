@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import ipaddress
+import re
 import shutil
 import tomllib
 from pathlib import Path
@@ -52,10 +53,18 @@ class IssuerConfig:
     listen: Listen
     ttl_seconds: int
     tailscale_bin: str
+    serve_host: str | None
     audiences: dict[str, Audience]
 
 
-_TOP_KEYS = {"secret_file", "listen", "ttl_seconds", "tailscale_bin", "devices", "audiences"}
+_TOP_KEYS = {"secret_file", "listen", "ttl_seconds", "tailscale_bin", "serve_host", "devices", "audiences"}
+_HOST = re.compile(r"([a-z0-9-]+(?:\.[a-z0-9-]+)*)\.?(?::[0-9]{1,5})?", re.ASCII | re.IGNORECASE)
+
+
+def host_name(text: str) -> str | None:
+    """'Laptop.Example-Tailnet.ts.net.:8443' -> 'laptop.example-tailnet.ts.net'; None for anything that is not a DNS name with an optional port."""
+    match = _HOST.fullmatch(text)
+    return match.group(1).lower() if match else None
 _AUDIENCE_KEYS = {"origin", "devices", "users", "refuse_automation"}
 
 
@@ -92,11 +101,15 @@ def parse_config(raw: dict, base: Path = Path(".")) -> IssuerConfig:
     tailscale_bin = raw.get("tailscale_bin", "auto")
     if not isinstance(tailscale_bin, str) or not tailscale_bin:
         raise ConfigError('tailscale_bin must be "auto" or a path')
+    serve_host = raw.get("serve_host")
+    if serve_host is not None and (not isinstance(serve_host, str) or ":" in serve_host or host_name(serve_host) is None):
+        raise ConfigError("serve_host must be the issuer's MagicDNS name, such as issuer.example-tailnet.ts.net, with no port")
     return IssuerConfig(
         master=master,
         listen=parse_listen(raw.get("listen", "127.0.0.1:8470")),
         ttl_seconds=ttl,
         tailscale_bin=tailscale_bin,
+        serve_host=host_name(serve_host) if serve_host is not None else None,
         audiences=audiences,
     )
 
