@@ -28,6 +28,7 @@ from urllib.parse import urlencode
 
 from gate_e2e import ROOT, Checks, Reply, free_port, wait_for_port
 
+from tailisman.gate.decision import bearer_digest
 from tailisman.gate.proxy import CONNECT_TIMEOUT
 
 APP = "app.example.com"
@@ -39,6 +40,7 @@ VIDEO = bytes((i * 7919) % 251 for i in range(5_000_000))
 UPLOAD = 40 * 1024 * 1024
 FIRST = 1024 * 1024
 LONG_POLL = CONNECT_TIMEOUT + 2
+BEARER = "e2e-machine-caller-token"
 
 
 class State:
@@ -205,7 +207,7 @@ class Stack:
         up = f"http://127.0.0.1:{p['app']}"
         (d / "gate.toml").write_text(
             f'listen = "127.0.0.1:{p["gate"]}"\nsession_secret_file = "gate-secret"\npassword_file = "gate-password"\n\n'
-            f'[[sites]]\nhost = "{APP}"\ncookie_domain = "example.com"\nupstream = "{up}"\nopen = ["/public/*"]\n\n'
+            f'[[sites]]\nhost = "{APP}"\ncookie_domain = "example.com"\nupstream = "{up}"\nopen = ["/public/*"]\nbearers = ["{bearer_digest(BEARER)}"]\n\n'
             f'[[sites]]\nhost = "{OTHER}"\ncookie_domain = "example.com"\nupstream = "{up}/"\n\n'
             f'[[sites]]\nhost = "{DOWN}"\nupstream = "http://127.0.0.1:{p["closed"]}"\n\n'
             f'[[sites]]\nhost = "{CADDY_SITE}"\n'
@@ -269,6 +271,13 @@ def run(stack: Stack) -> int:
     c.check("a forward_auth site on the same listener gets 404 outside /.tailisman/", r.status == 404, r.status)
     r = send("GET", "/.tailisman/verify", CADDY_SITE, {"X-Forwarded-Method": "GET", "X-Forwarded-Uri": "/x", "Accept": "text/html"})
     c.check("the same listener still answers forward_auth's verify for it", r.status == 302, r.status)
+
+    r = send("GET", "/feed.xml", headers={"Authorization": f"Bearer {BEARER}", "X-Tailisman-Session": "password"})
+    seen = r.json()["headers"] if r.status == 200 else {}
+    c.check("a listed bearer on a non-open path reaches the app with no cookie, Authorization intact, as session bearer", (seen.get("authorization"), seen.get("x-tailisman-session")) == ([f"Bearer {BEARER}"], ["bearer"]), (r.status, seen.get("authorization"), seen.get("x-tailisman-session")))
+    r = send("GET", "/feed.xml", headers={"Authorization": f"Bearer {BEARER}-wrong", "Accept": "text/html"})
+    c.check("an unlisted bearer falls through to the sign-in redirect", r.status == 302, r.status)
+    STATE.paths.clear()
 
     owner = sign_in((d / "passphrase").read_text().strip())
     c.check("the owner signs in on the proxy site", owner is not None)

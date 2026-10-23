@@ -16,7 +16,8 @@ from collections.abc import Iterator
 from email.message import Message
 
 from .config import Upstream
-from .session import COOKIE, CSRF_COOKIE, Session
+from .decision import Allow
+from .session import COOKIE, CSRF_COOKIE
 
 SESSION_HEADER = "X-Tailisman-Session"
 USER_HEADER = "X-Tailisman-User"
@@ -35,8 +36,11 @@ class BadRequest(Exception):
     pass
 
 
-def session_headers(session: Session | None) -> Headers:
+def identity_headers(allow: Allow) -> Headers:
     """What the app behind is told about the visitor. Client-sent copies never reach it: the proxy strips them, as Caddy's copy_headers does."""
+    if allow.bearer:
+        return ((SESSION_HEADER, "bearer"),)
+    session = allow.session
     if session is None:
         return ()
     return ((SESSION_HEADER, session.method.value),) + (((USER_HEADER, session.guest),) if session.guest else ())

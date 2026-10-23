@@ -29,6 +29,7 @@ from urllib.parse import urlencode
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+from tailisman.gate.decision import bearer_digest  # noqa: E402
 from tailisman.gate.password import parse_hash  # noqa: E402
 from tailisman.gate.session import Method, Session, mint, session_key  # noqa: E402
 
@@ -36,6 +37,7 @@ TOOLS = "tools.example.com"
 NOTES = "notes.example.com"
 SOLO = "solo.example.net"
 PEER = "192.0.2.1"
+BEARER = "e2e-machine-caller-token"
 WHOIS = {
     PEER: {
         "Node": {"ID": 1, "StableID": "nEXAMPLE1CNTRL", "Name": "laptop.example-tailnet.ts.net.", "ComputedName": "laptop", "Tags": None, "Addresses": [f"{PEER}/32"]},
@@ -66,7 +68,7 @@ def wait_for_port(port: int, process: subprocess.Popen | None, name: str, timeou
 
 class Upstream(http.server.BaseHTTPRequestHandler):
     def _answer(self) -> None:
-        body = json.dumps({"upstream": True, "path": self.path, "session": self.headers.get("X-Tailisman-Session"), "user": self.headers.get("X-Tailisman-User")}).encode()
+        body = json.dumps({"upstream": True, "path": self.path, "session": self.headers.get("X-Tailisman-Session"), "user": self.headers.get("X-Tailisman-User"), "authorization": self.headers.get("Authorization")}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -113,7 +115,7 @@ class Stack:
             f'listen = "127.0.0.1:{p["gate"]}"\nsession_secret_file = "gate-secret"\npassword_file = "gate-password"\nsession_days = 30\n'
             f'issuer = "{self.issuer_url}"\nissuer_address_space = "loopback"\n\n'
             "[rate_limit]\nper_ip = 3\nglobal = 6\nwindow_seconds = 900\n\n"
-            f'[[sites]]\nhost = "{self.tools}"\ncookie_domain = "example.com"\ntailisman_key = "{key}"\nopen = ["/healthz", "/api/*", "POST /report"]\n\n'
+            f'[[sites]]\nhost = "{self.tools}"\ncookie_domain = "example.com"\ntailisman_key = "{key}"\nopen = ["/healthz", "/api/*", "POST /report"]\nbearers = ["{bearer_digest(BEARER)}"]\n\n'
             f'[[sites]]\nhost = "{self.notes}"\ncookie_domain = "example.com"\n\n'
             f'[[sites]]\nhost = "{self.solo}"\n'
         )
@@ -225,6 +227,11 @@ def run(stack: Stack) -> int:
     c.check("an open prefix with a .. segment does not open /secret", r.status == 302, r.status)
     r = get("/api/%2e%2e/secret")
     c.check("an open prefix with an encoded .. does not open /secret", r.status == 302, r.status)
+
+    r = request(port, "GET", "/feed.xml", TOOLS, {"Authorization": f"Bearer {BEARER}", "Accept": "application/json"})
+    c.check("a listed bearer on a non-open path reaches the app through forward_auth, Authorization intact, as session bearer", reached_upstream(r) and (r.json()["session"], r.json()["authorization"]) == ("bearer", f"Bearer {BEARER}"), r.body)
+    r = request(port, "GET", "/feed.xml", TOOLS, {"Authorization": f"Bearer {BEARER}-wrong", "Accept": "application/json"})
+    c.check("an unlisted bearer falls through to 401", r.status == 401, r.status)
 
     token = json.loads(request(stack.ports["serve"], "GET", "/v1/claim", "127.0.0.1", {"Origin": f"https://{TOOLS}"}).body).get("token", "")
     c.check("the stand-in issuer mints a token for the site", token.startswith("tsm1."), token[:12])

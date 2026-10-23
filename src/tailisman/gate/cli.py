@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from ..issuer.config import ConfigError
 from .config import GateConfig, Site, load_config, site_key
-from .decision import LOGIN_PATH
+from .decision import LOGIN_PATH, bearer_digest
 from .http import GateApp, make_server
 from .credentials import Credentials, Guest, guest_digest, parse_guest_line, parse_guests
 from .password import generate_passphrase, hash_password, write_private
@@ -31,6 +31,7 @@ def add_commands(commands: argparse._SubParsersAction) -> dict[str, Callable[[ar
     status = gate_commands.add_parser("status", help="list the gated sites and check each one refuses an anonymous visitor")
     status.add_argument("--config", required=True)
     status.add_argument("--base-url-for", action="append", default=[], metavar="HOST=URL", help="send HOST's checks to URL instead of https://HOST, with HOST as the Host header")
+    gate_commands.add_parser("bearer-hash", help="read one machine bearer token from stdin, without echo, and print the digest for a site's bearers list")
     passwd = commands.add_parser("passwd", help="set the gate's backup password, or add, revoke and list guest passwords; changes take effect without a restart")
     passwd.add_argument("--config", required=True)
     action = passwd.add_mutually_exclusive_group()
@@ -41,7 +42,7 @@ def add_commands(commands: argparse._SubParsersAction) -> dict[str, Callable[[ar
     passwd.add_argument("--out", help="where --generate writes the passphrase, mode 0600")
     passwd.add_argument("--sites", help="with --add: comma-separated [[sites]] hosts the guest may sign in to")
     passwd.add_argument("--force", action="store_true", help="let --generate overwrite --out, or --add replace an existing guest's password")
-    return {"gate": lambda args: {"run": _run, "status": _status}[args.gate_command](args), "passwd": _passwd}
+    return {"gate": lambda args: {"run": _run, "status": _status, "bearer-hash": _bearer_hash}[args.gate_command](args), "passwd": _passwd}
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -177,6 +178,16 @@ def _write_guests(config: GateConfig, records: dict[str, str]) -> None:
     write_private(config.guest_file, "".join(line + "\n" for line in records.values()), overwrite=True)
 
 
+def _bearer_hash(args: argparse.Namespace) -> int:
+    """The token comes from stdin, never argv, so it stays out of shell history and the process list."""
+    token = (getpass.getpass("Bearer token: ") if sys.stdin.isatty() else sys.stdin.readline()).strip()
+    if not token:
+        print("tailisman: no token on stdin; nothing printed", file=sys.stderr)
+        return 1
+    print(bearer_digest(token.removeprefix("Bearer ").strip()))
+    return 0
+
+
 def _status(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     bases = _base_urls(args.base_url_for, config)
@@ -189,7 +200,7 @@ def _status(args: argparse.Namespace) -> int:
         rules = ", ".join(str(rule) for rule in site.open) or "none"
         guests = credentials.guest_count(site.host)
         mode = f"upstream {site.upstream}" if site.upstream else "forward_auth"
-        print(f"{site.host}: {mode}, scope {site.scope}, tailnet {tailnet}, guests {guests}, open {rules}: {'; '.join(problems) or 'ok'}")
+        print(f"{site.host}: {mode}, scope {site.scope}, tailnet {tailnet}, guests {guests}, bearers {len(site.bearers)}, open {rules}: {'; '.join(problems) or 'ok'}")
     return 1 if failed else 0
 
 

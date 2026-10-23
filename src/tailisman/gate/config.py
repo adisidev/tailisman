@@ -53,6 +53,7 @@ class Site:
     verifier: Verifier | None
     open: tuple[OpenRule, ...]
     upstream: Upstream | None = None
+    bearers: frozenset[str] = frozenset()
 
     @property
     def scope(self) -> str:
@@ -82,8 +83,9 @@ class GateConfig:
 
 _TOP_KEYS = {"listen", "session_secret_file", "password_file", "guest_file", "session_days", "issuer", "issuer_address_space", "rate_limit", "sites"}
 _RATE_KEYS = {"per_ip", "global", "window_seconds"}
-_SITE_KEYS = {"host", "cookie_domain", "tailisman_key", "open", "upstream"}
+_SITE_KEYS = {"host", "cookie_domain", "tailisman_key", "open", "upstream", "bearers"}
 _HOST = re.compile(r"([a-z0-9-]+(?:\.[a-z0-9-]+)+|localhost)\.?(?::([0-9]{1,5}))?", re.ASCII | re.IGNORECASE)
+BEARER_DIGEST = re.compile(r"sha256\$[A-Za-z0-9+/]{43}=")
 _OPEN = re.compile(r"(?:([A-Z]+) )?(/[^\s*?#]*)(\*)?")
 
 
@@ -205,7 +207,10 @@ def _site(entry: object, issuer: str | None, clock: Callable[[], float]) -> Site
     if not isinstance(rules, list):
         raise ConfigError(f"site {host} open must be a list of rules")
     upstream = parse_upstream(entry["upstream"], host) if "upstream" in entry else None
-    return Site(host, normalise_origin("https://" + host), cookie_domain, verifier, tuple(parse_open_rule(r) for r in rules), upstream)
+    bearers = entry.get("bearers", [])
+    if not isinstance(bearers, list) or not all(isinstance(b, str) and BEARER_DIGEST.fullmatch(b) for b in bearers):
+        raise ConfigError(f"site {host} bearers must be a list of sha256$<base64> digests from `tailisman gate bearer-hash`")
+    return Site(host, normalise_origin("https://" + host), cookie_domain, verifier, tuple(parse_open_rule(r) for r in rules), upstream, frozenset(bearers))
 
 
 def parse_upstream(text: object, host: str) -> Upstream:

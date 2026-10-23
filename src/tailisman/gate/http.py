@@ -26,7 +26,7 @@ from .config import GateConfig, Site, host_without_port
 from .decision import LOGIN_PATH, Allow, Decision, GateRequest, SignIn, Unauthorised, decide, request_host, safe_next
 from .credentials import Credentials
 from .ratelimit import RateLimiter
-from .proxy import relay, session_headers
+from .proxy import identity_headers, relay
 from .session import COOKIE, CSRF_COOKIE, Method, Session, cookie_values, mint
 
 STATIC = Path(__file__).with_name("static")
@@ -133,7 +133,7 @@ class GateApp:
     def _verify(self, headers: Message) -> Response:
         decision = self.check(GateRequest.from_forward_auth(headers))
         if isinstance(decision, Allow):
-            return Response(200, (("Cache-Control", "no-store"),) + session_headers(decision.session), b"")
+            return Response(200, (("Cache-Control", "no-store"),) + identity_headers(decision), b"")
         return refusal(decision)
 
     def _current_session(self, request: Incoming, site: Site) -> Session | None:
@@ -369,7 +369,7 @@ def handler_for(app: GateApp) -> type[http.server.BaseHTTPRequestHandler]:
         def _proxy(self, site: Site) -> None:
             decision = app.check(GateRequest.from_request(self.command, self.path, self.headers))
             if isinstance(decision, Allow):
-                _log(app.note_upstream(site, relay(self, site.upstream, session_headers(decision.session))))
+                _log(app.note_upstream(site, relay(self, site.upstream, identity_headers(decision))))
                 return
             self._skip_small_body()
             self._send(refusal(decision))

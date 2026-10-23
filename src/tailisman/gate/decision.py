@@ -7,7 +7,9 @@ returns a non-2xx answer from the gate to the client as is, Location and Set-Coo
 
 from __future__ import annotations
 
+import base64
 import dataclasses
+import hashlib
 from collections.abc import Callable
 from email.message import Message
 from urllib.parse import quote, urlsplit
@@ -29,6 +31,7 @@ class GateRequest:
     uri: str
     cookies: tuple[str, ...]
     accepts_html: bool
+    bearer: str | None = None
 
     @classmethod
     def from_forward_auth(cls, headers: Message) -> GateRequest:
@@ -42,7 +45,8 @@ class GateRequest:
 
     @classmethod
     def _of(cls, headers: Message, method: str, uri: str) -> GateRequest:
-        return cls(request_host(headers), method, uri, cookie_values(headers.get("Cookie"), COOKIE), "text/html" in (headers.get("Accept") or ""))
+        cookies = cookie_values(headers.get("Cookie"), COOKIE)
+        return cls(request_host(headers), method, uri, cookies, "text/html" in (headers.get("Accept") or ""), bearer_token(headers))
 
     @property
     def path(self) -> str:
@@ -51,7 +55,10 @@ class GateRequest:
 
 @dataclasses.dataclass(frozen=True)
 class Allow:
+    """Let through with this session, with none (an open rule), or because the request's bearer is one the site lists."""
+
     session: Session | None
+    bearer: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -65,6 +72,17 @@ class Unauthorised:
 
 
 Decision = Allow | SignIn | Unauthorised
+
+
+def bearer_token(headers: Message) -> str | None:
+    """The token of the one Authorization header when it is `Bearer <token>`; anything else is no bearer at all."""
+    values = headers.get_all("Authorization") or []
+    scheme, _, token = (values[0] if len(values) == 1 else "").strip().partition(" ")
+    return (token.strip() or None) if scheme.lower() == "bearer" else None
+
+
+def bearer_digest(token: str) -> str:
+    return "sha256$" + base64.b64encode(hashlib.sha256(token.encode("utf-8")).digest()).decode("ascii")
 
 
 def request_host(headers: Message) -> str | None:
@@ -81,6 +99,8 @@ def decide(request: GateRequest, config: GateConfig, check_session: SessionCheck
         return Unauthorised("not_from_forward_auth")
     if is_open(site, request.method, request.path):
         return Allow(None)
+    if request.bearer is not None and bearer_digest(request.bearer) in site.bearers:
+        return Allow(None, bearer=True)
     if session := check_session(request.cookies, site.host, now):
         return Allow(session)
     if request.method in NAVIGATION_METHODS and request.accepts_html:

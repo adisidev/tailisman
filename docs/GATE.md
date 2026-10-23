@@ -50,7 +50,7 @@ Then either point the tunnel at the gate and give each site an `upstream` (proxy
 tailisman gate status --config ~/.config/tailisman/gate.toml
 ```
 
-It prints each site's upstream (or `forward_auth`), scope and guest count, checks that an anonymous visitor is sent to sign in, and for a proxy site that its upstream accepts connections.
+It prints each site's upstream (or `forward_auth`), scope, guest count and bearer count, checks that an anonymous visitor is sent to sign in, and for a proxy site that its upstream accepts connections.
 
 ## Cloudflare Tunnel (proxy mode, no Caddy)
 
@@ -124,6 +124,24 @@ If the site's own `header` directive sets a `Content-Security-Policy`, scope it 
 
 What Caddy 2.11.7 does here was measured with `e2e/gate_e2e.py`, not assumed. `forward_auth` sends the original `Host`, `X-Forwarded-Method` and `X-Forwarded-Uri` to the gate, and the URI is raw, so `/api/../secret` arrives as written. It also appends the original query string to the verify URI. A 302 or 401 from the gate reaches the browser unchanged, `Location` and body included, and a `Set-Cookie` from `/.tailisman/*` reaches the browser. Caddy matches its own `path` matchers against the cleaned path but proxies the raw one, so an upstream can receive `/api/../secret` and resolve it to `/secret` itself. That is why the gate refuses to match open rules against such paths.
 
+## Machine callers: exempt by credential, not by path
+
+Some apps have machine callers, a feed reader or a deploy hook, that already send a static `Authorization: Bearer <token>`, often on paths that also serve anonymous visitors. An open rule would let everyone through on those paths, and letting any request with an `Authorization` header through would let anyone in who types one. Instead, list the digests of the tokens the gate should know:
+
+```sh
+tailisman gate bearer-hash        # paste the token; it is read from stdin without echo, never from argv, so it stays out of shell history
+```
+
+```toml
+[[sites]]
+host = "notes.example.com"
+bearers = ["sha256$<base64>"]     # one digest per machine caller
+```
+
+A request whose one `Authorization` header is `Bearer <token>`, with a token whose SHA-256 is listed for that site, is let in with no session. The check runs after the open rules and before the session check. The header goes on to the app unchanged, so the app still checks the token itself, and the app sees `X-Tailisman-Session: bearer`. A token that is not listed, a second `Authorization` header or another scheme counts as no bearer at all, and the request goes on to the usual session check and sign-in, so the gate does not tell anyone whether a token was close. The path checks that guard open rules do not apply here, because the token, not the path, is the proof. This is the way to keep machine callers working. Use open rules only for callers that send no credential.
+
+The digest is unsalted SHA-256, so a short or guessable token can be guessed back from it. Use tokens with real entropy and keep `gate.toml` mode 0600. Measured on Caddy 2.11.7 with `e2e/gate_e2e.py`: `forward_auth` passes the original `Authorization` header to the gate, and the app still receives it.
+
 ## Config reference
 
 `gate.example.toml` is a complete example.
@@ -141,6 +159,7 @@ What Caddy 2.11.7 does here was measured with `e2e/gate_e2e.py`, not assumed. `f
 | `[[sites]] cookie_domain` | Optional. The cookie's `Domain`, which must be the host or a parent of it. One sign-in then covers every host under it. Without it the cookie is host-only. |
 | `[[sites]] tailisman_key` | Optional. This origin's key from `tailisman key --aud https://<host>`. Needs `issuer`. Without it the site has only the password path. |
 | `[[sites]] upstream` | Optional. Makes the site a proxy site: `http://HOST:PORT` of the app, with no path, query or user name, and plain HTTP only. Without it the site is a `forward_auth` site behind Caddy. |
+| `[[sites]] bearers` | Optional. SHA-256 digests, `sha256$<base64>` from `tailisman gate bearer-hash`, of machine callers' bearer tokens that may pass without a session. |
 | `[[sites]] open` | Optional. Requests the gate lets through without a session: `"/healthz"` exact, `"/api/*"` everything under `/api/`, `"POST /report"` one method only. The app behind must guard these itself. |
 
 `issuer_address_space` is a test knob. It is `"local"` by default, which is where Chrome places tailnet addresses. The local browser check sets it to `"loopback"`, because there the page and the stand-in issuer are both on 127.0.0.1, and Chrome fails a fetch whose declared address space does not match.
@@ -153,7 +172,7 @@ All routes live under `/.tailisman/` on each gated host. On a proxy site every o
 
 | Route | What it does |
 | --- | --- |
-| `GET /.tailisman/verify` | The `forward_auth` target. 200 with an empty body to allow, plus `X-Tailisman-Session` when there is a session and `X-Tailisman-User` for a guest. 302 to the sign-in page for a page navigation (`GET` or `HEAD` that accepts `text/html`), 401 with a small JSON body otherwise. |
+| `GET /.tailisman/verify` | The `forward_auth` target. 200 with an empty body to allow, plus `X-Tailisman-Session` when there is a session or a listed bearer (`bearer`) and `X-Tailisman-User` for a guest. 302 to the sign-in page for a page navigation (`GET` or `HEAD` that accepts `text/html`), 401 with a small JSON body otherwise. |
 | `GET /.tailisman/login?next=` | The sign-in page. `next` must be a path on the same host. Anything else becomes `/`. A browser that already has a session goes straight to `next`. |
 | `POST /.tailisman/login` | Checks the rate limit, then CSRF, then the guest passwords for this site, then the owner password. Success sets the session cookie and answers 303 to `next`. |
 | `POST /.tailisman/exchange?next=` | Turns an issuer token into a session. A JSON post (the silent path) gets `{"device", "next"}`. The issuer's form post (the navigation path) gets a 303 to `next`. A refused token gets 403 with its code. |
