@@ -9,12 +9,14 @@
 const DEFAULT_TIMEOUT_MS = 20000;
 
 /**
- * Silent transport. Resolves, never rejects, with one of
+ * Silent transport. targetAddressSpace must match where Chrome places the issuer's IP: "local" for a tailnet
+ * address (100.64.0.0/10), "loopback" only for an issuer on 127.0.0.1 in local testing; a mismatch fails the fetch.
+ * Resolves, never rejects, with one of
  *   { ok: true, token }
  *   { ok: false, reason: "unreachable" }          DNS failure, permission denied, timeout, network error
  *   { ok: false, reason: "refused", error }       the issuer answered with a refusal code
  */
-export async function claim({ issuer, timeoutMs = DEFAULT_TIMEOUT_MS, signal } = {}) {
+export async function claim({ issuer, timeoutMs = DEFAULT_TIMEOUT_MS, targetAddressSpace = "local", signal } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const abort = () => controller.abort();
@@ -24,7 +26,7 @@ export async function claim({ issuer, timeoutMs = DEFAULT_TIMEOUT_MS, signal } =
       mode: "cors",
       credentials: "omit",
       cache: "no-store",
-      targetAddressSpace: "local",
+      targetAddressSpace,
       signal: controller.signal,
     });
     const body = await response.json().catch(() => null);
@@ -51,9 +53,9 @@ export function navigate({ issuer, exchange }) {
  * Options: issuer, exchange (same-origin path that accepts the token), button (selector or element, hidden until
  * needed), silent (default true; false shows only the button), askPermission (default true; false skips the silent
  * fetch while the Local Network Access permission is still "prompt"), isSignedIn (default () => false), timeoutMs,
- * onResult(result, exchangeStatus) (default reloads after a successful exchange).
+ * targetAddressSpace (see claim), onResult(result, exchangeStatus) (default reloads after a successful exchange).
  */
-export function mount({ issuer, exchange, button, silent = true, askPermission = true, isSignedIn = () => false, timeoutMs, onResult } = {}) {
+export function mount({ issuer, exchange, button, silent = true, askPermission = true, isSignedIn = () => false, timeoutMs, targetAddressSpace, onResult } = {}) {
   const controller = new AbortController();
   const element = typeof button === "string" ? document.querySelector(button) : (button ?? null);
   const click = (event) => {
@@ -83,7 +85,7 @@ export function mount({ issuer, exchange, button, silent = true, askPermission =
       report({ ok: false, reason: "unreachable", permission });
       return;
     }
-    const result = await claim({ issuer, timeoutMs, signal: controller.signal });
+    const result = await claim({ issuer, timeoutMs, targetAddressSpace, signal: controller.signal });
     if (controller.signal.aborted) return;
     if (!result.ok) {
       if (result.reason === "unreachable") reveal();

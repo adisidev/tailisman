@@ -34,12 +34,14 @@ PAGE = """<!doctype html><meta charset=utf-8><title>tailisman demo</title>
 <script type=module>
 import {{ mount }} from "/tailisman.js";
 const issuer = {issuer};
+const targetAddressSpace = {space};
 const silent = new URLSearchParams(location.search).get("silent") !== "0";
 mount({{
   issuer,
   exchange: "/auth/tailisman",
   button: "#tailnet-signin",
   silent,
+  targetAddressSpace,
   isSignedIn: () => document.body.dataset.outcome === "signed-in",
   onResult(result, status) {{
     if (result.ok && status >= 200 && status < 300) return location.reload();
@@ -53,9 +55,10 @@ if (!silent) document.body.dataset.outcome = "waiting-for-click";
 
 
 class Demo:
-    def __init__(self, verifier: Verifier, issuer: str) -> None:
+    def __init__(self, verifier: Verifier, issuer: str, address_space: str) -> None:
         self.verifier = verifier
         self.issuer = issuer
+        self.address_space = address_space
         self.sessions: dict[str, Claim] = {}
         self.lock = threading.Lock()
 
@@ -88,7 +91,8 @@ def handler_for(demo: Demo) -> type[http.server.BaseHTTPRequestHandler]:
             if self.path.split("?")[0] == "/":
                 who = f"Signed in as <b>{html.escape(claim.node_name)}</b> ({html.escape(claim.login)})" if claim else "Not signed in."
                 issuer = json.dumps(demo.issuer).replace("<", "\\u003c")
-                page = PAGE.format(outcome="signed-in" if claim else "pending", who=who, issuer=issuer)
+                space = json.dumps(demo.address_space)
+                page = PAGE.format(outcome="signed-in" if claim else "pending", who=who, issuer=issuer, space=space)
                 return self._send(200, "text/html; charset=utf-8", page.encode())
             self._send(404, "text/plain", b"not found\n")
 
@@ -124,8 +128,8 @@ def handler_for(demo: Demo) -> type[http.server.BaseHTTPRequestHandler]:
     return Handler
 
 
-def make_server(host: str, port: int, origin: str, issuer: str, key: str) -> http.server.ThreadingHTTPServer:
-    demo = Demo(Verifier(key=key, audience=origin), issuer)
+def make_server(host: str, port: int, origin: str, issuer: str, key: str, address_space: str = "local") -> http.server.ThreadingHTTPServer:
+    demo = Demo(Verifier(key=key, audience=origin), issuer, address_space)
     return http.server.ThreadingHTTPServer((host, port), handler_for(demo))
 
 
@@ -135,11 +139,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--origin", required=True, help="the public origin visitors load this page from, e.g. https://demo.example.com")
     parser.add_argument("--issuer", required=True, help="the issuer's tailnet URL, e.g. https://laptop.example-tailnet.ts.net:8443")
+    parser.add_argument("--address-space", choices=["local", "loopback"], default="local", help="loopback only when the issuer URL is a 127.0.0.1 stand-in")
     args = parser.parse_args()
     key = os.environ.get("TAILISMAN_KEY")
     if not key:
         parser.error("set TAILISMAN_KEY to the output of `tailisman key --aud <origin>`")
-    server = make_server(args.host, args.port, args.origin, args.issuer, key)
+    server = make_server(args.host, args.port, args.origin, args.issuer, key, args.address_space)
     print(f"demo consumer on http://{args.host}:{args.port} for {args.origin}, issuer {args.issuer}")
     server.serve_forever()
 
