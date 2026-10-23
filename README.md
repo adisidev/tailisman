@@ -4,11 +4,12 @@ tailisman lets a public web app learn that the visitor's browser runs on one of 
 
 It is for a single owner with a site on the public internet (for example `heckle.example.com` behind Cloudflare) who wants their laptop and phone signed in without a password, and nobody else. It checks the device as well as the user, because the owner's own scripts and agents run as the owner's user.
 
-There are three parts in this repository, all MIT licensed.
+There are four parts in this repository, all MIT licensed.
 
 - The issuer is a small Python HTTP server on a tailnet host, reachable only through `tailscale serve`.
 - The browser snippet is `client/tailisman.js`, one ES module with no dependencies.
 - The verifiers are a Python package (`tailisman`, standard library only) and a Node package (`js/`, `node:crypto` only).
+- The gate (`tailisman gate`) signs visitors in to whole sites behind Caddy, through the issuer or with a backup password, with no change to the apps. See [docs/GATE.md](docs/GATE.md).
 
 ## How it works
 
@@ -199,10 +200,39 @@ With loopback TCP, any process on the issuer host can connect to the issuer, sen
 
 `refuse_automation` stops a default Playwright, Puppeteer or headless Chrome session. It does not stop anyone who sets `navigator.webdriver` to false or edits the snippet, because the browser reports these signals about itself. Leave it off for sites where your own agents should sign in.
 
+## Gating whole sites with Caddy
+
+The gate is for sites you do not want to change. Caddy asks it about every request through `forward_auth`. A browser on an allowlisted tailnet device is signed in through the issuer, and any other browser gets a password form. One sign-in can cover every host under a domain. [docs/GATE.md](docs/GATE.md) has the request flow, the config reference, service files and the caveats.
+
+```sh
+tailisman keygen ~/.config/tailisman/gate-secret
+cp gate.example.toml ~/.config/tailisman/gate.toml      # edit sites, issuer and each site's tailisman_key
+tailisman passwd --config ~/.config/tailisman/gate.toml --generate --out ~/.config/tailisman/gate-passphrase
+tailisman gate run --config ~/.config/tailisman/gate.toml
+```
+
+```caddy
+(tailisman_gate) {
+	route {
+		reverse_proxy /.tailisman/* 127.0.0.1:8471
+		forward_auth 127.0.0.1:8471 {
+			uri /.tailisman/verify
+		}
+	}
+}
+
+tools.example.com {
+	import tailisman_gate
+	reverse_proxy 127.0.0.1:9000
+}
+```
+
+`tailisman gate status --config ~/.config/tailisman/gate.toml` then checks that every site sends an anonymous visitor to the sign-in page.
+
 ## Development
 
 ```sh
-uv run --with pytest pytest          # Python verifier, issuer, CLI, demo
+uv run --with pytest pytest          # Python verifier, issuer, gate, CLI, demo
 node --test js/                      # Node verifier and the snippet with stubbed browser globals (the tests are TypeScript, so Node 22.18 or later)
 uv run python scripts/make_vectors.py  # regenerate testdata/vectors.json; a test fails if it is stale
 ```
@@ -212,6 +242,8 @@ uv run python scripts/make_vectors.py  # regenerate testdata/vectors.json; a tes
 ```sh
 uv run --with playwright python e2e/browser_check.py --demo https://demo.example.com --browser chromium --grant-lna --expect signed-in
 ```
+
+The gate has its own end to end runs through a real Caddy, described in [docs/GATE.md](docs/GATE.md#testing): `e2e/gate_e2e.py` over HTTP and `e2e/gate_browser_check.py` in Playwright Chromium.
 
 ## Findings
 

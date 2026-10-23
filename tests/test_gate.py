@@ -260,6 +260,7 @@ def test_open_rules_match_exact_prefix_and_method_and_refuse_traversal(gate, met
         ("https://evil.example.net/", "/"),
         ("javascript:alert(1)", "/"),
         ("/\tevil", "/"),
+        ("/.tailisman/login?next=/x", "/"),
     ],
 )
 def test_next_is_only_ever_a_same_host_path(text, expected):

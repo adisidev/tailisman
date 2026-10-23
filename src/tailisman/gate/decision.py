@@ -83,8 +83,8 @@ def is_open(site: Site, method: str, path: str) -> bool:
 
 
 def safe_next(text: str | None) -> str:
-    """A same-host path to return to after sign-in; anything else becomes /."""
+    """A same-host path to return to after sign-in; anything else becomes /, including the login page, which would loop."""
     if not text or not text.startswith("/") or text.startswith("//") or "\\" in text or any(ord(c) < 0x21 for c in text):
         return "/"
     parts = urlsplit(text)
-    return text if not parts.scheme and not parts.netloc else "/"
+    return text if not parts.scheme and not parts.netloc and parts.path != LOGIN_PATH else "/"

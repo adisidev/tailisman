@@ -50,6 +50,10 @@ The `audiences` table, keyed by normalised origin, is the CORS allowlist, the `r
 
 - Under launchd, the macOS app binary started straight from Python prints "The Tailscale GUI failed to start" with exit status 0 instead of answering `whois`, so every claim was refused as `unknown_peer`. It answers as the CLI once `SHLVL` or `TERM` is in its environment, so the issuer sets `SHLVL` when the environment has neither.
 
+## The gate
+
+The gate is a consumer like any other, built for sites that should not change. It holds one verifier per gated origin and turns a claim into its own cookie, and it adds a backup password for browsers the issuer cannot reach. It sits behind Caddy's `forward_auth` because every proxy it has to front is Caddy. Its cookie needs no server state: the MAC key mixes the password hash into the session secret, so changing the password is the one way to end every session. `docs/GATE.md` covers the rest.
+
 ## What it does not do
 
-No JWT, no key IDs, no refresh, no issuer-side sessions, no whois cache, no Funnel support, no cookie minting (the consumer owns its session format), and no device enrolment flow.
+No JWT, no key IDs, no refresh, no issuer-side sessions, no whois cache, no Funnel support, and no device enrolment flow. Only the gate mints cookies; a consumer of the verifier owns its own session format.
