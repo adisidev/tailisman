@@ -102,6 +102,9 @@ def build() -> dict:
             {"input": "https://heckle.example.com:99999", "expect": None},
             {"input": "https://heckle.example.com:0", "expect": None},
             {"input": "", "expect": None},
+            {"input": "https://heckle.example.\u212acom", "expect": None},
+            {"input": "https://\u017fecret.example.com", "expect": None},
+            {"input": "https://heckle.example.com\n", "expect": None},
         ],
         "cases": [{"name": name, "audience": aud, "key": format_key(key[aud]), "token": token, "expect": expect} for name, aud, token, expect in cases],
     }

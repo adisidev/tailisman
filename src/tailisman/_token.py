@@ -58,7 +58,7 @@ _WIRE = {
     "nonce": ("nonce", str),
 }
 
-_ORIGIN = re.compile(r"(https?)://([a-z0-9.-]+|\[[0-9a-f:.]+\])(?::([0-9]{1,5}))?/?", re.IGNORECASE)
+_ORIGIN = re.compile(r"(https?)://([a-z0-9.-]+|\[[0-9a-f:.]+\])(?::([0-9]{1,5}))?/?", re.ASCII | re.IGNORECASE)
 _DEFAULT_PORT = {"http": 80, "https": 443}
 _B64URL = re.compile(r"[A-Za-z0-9_-]*")
 _NONCE = re.compile(r"[A-Za-z0-9_-]{22}")

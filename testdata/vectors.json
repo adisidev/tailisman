@@ -75,6 +75,18 @@
     {
       "input": "",
       "expect": null
+    },
+    {
+      "input": "https://heckle.example.\u212acom",
+      "expect": null
+    },
+    {
+      "input": "https://\u017fecret.example.com",
+      "expect": null
+    },
+    {
+      "input": "https://heckle.example.com\n",
+      "expect": null
     }
   ],
   "cases": [
