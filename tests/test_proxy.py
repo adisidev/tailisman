@@ -1,3 +1,5 @@
+import http.client
+import io
 import re
 
 import pytest
@@ -5,7 +7,7 @@ from test_gate import SECRET, headers
 
 from tailisman.gate.config import ConfigError, parse_config
 from tailisman.gate.decision import GateRequest
-from tailisman.gate.proxy import body_length, client_headers, is_websocket, upstream_headers
+from tailisman.gate.proxy import BadRequest, body_length, check_header_values, client_headers, is_websocket, upstream_headers
 
 
 def config_with(tmp_path, upstream):
@@ -103,3 +105,13 @@ def test_upstream_headers_drop_every_name_with_an_underscore():
     forwarded = upstream_headers(sent, (("X-Tailisman-Session", "password"),), "127.0.0.1", None, websocket=False)
     assert [name for name, _ in forwarded] == ["Host", "Accept", "X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Tailisman-Session"]
 
+
+@pytest.mark.parametrize("raw", [b"Foo: bar\r\n X-Tailisman-Session: password\r\n", b"Foo: bar\r\n\tmore\r\n"])
+def test_a_folded_header_value_is_refused(raw):
+    parsed = http.client.parse_headers(io.BytesIO(b"Host: a.example.com\r\n" + raw + b"\r\n"))
+    with pytest.raises(BadRequest):
+        check_header_values(parsed)
+
+
+def test_plain_header_values_pass():
+    check_header_values(headers({"Host": "a.example.com", "Accept": "text/html", "Cookie": "a=1; b=2"}))

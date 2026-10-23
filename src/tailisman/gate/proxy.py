@@ -50,6 +50,12 @@ def is_websocket(headers: Message) -> bool:
     return (headers.get("Upgrade") or "").strip().lower() == "websocket" and "upgrade" in _tokens(headers.get_all("Connection") or [])
 
 
+def check_header_values(headers: Message) -> None:
+    """Refuses a value with CR or LF in it: a folded header line (obs-fold), which apps behind would each unfold their own way."""
+    if any("\r" in value or "\n" in value for value in headers.values()):
+        raise BadRequest("a header line is folded")
+
+
 def body_length(headers: Message) -> int | str | None:
     """The request body's framing: a byte count, "chunked", or None for no body."""
     encodings = headers.get_all("Transfer-Encoding") or []
@@ -106,6 +112,7 @@ def client_headers(headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
 def relay(handler: http.server.BaseHTTPRequestHandler, upstream: Upstream, identity: Headers) -> str | None:
     """Forwards the handler's request to the app and its answer back. Returns why the app could not be reached, or None."""
     try:
+        check_header_values(handler.headers)
         body = body_length(handler.headers)
     except BadRequest as exc:
         handler.send_error(400, str(exc))

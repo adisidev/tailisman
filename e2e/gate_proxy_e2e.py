@@ -421,6 +421,9 @@ def run(stack: Stack) -> int:
     answer, closed = raw(f"GET /public/gone HTTP/1.1\r\n{upgrade}\r\nGET /secret HTTP/1.1\r\nHost: {APP}\r\nX-Tailisman-Session: password\r\n\r\n".encode())
     c.check("an upgrade on an open path the app answers with a keep-alive 404 is relayed and closed, and a request pipelined behind it never reaches the app", answer.startswith(b"HTTP/1.1 404") and answer.count(b"HTTP/1.1 ") == 1 and closed and STATE.paths == ["/public/gone"], (answer[:200], closed, STATE.paths))
     STATE.paths.clear()
+    answer, closed = raw(f"GET /public/x HTTP/1.1\r\nHost: {APP}\r\nFoo: bar\r\n X-Tailisman-Session: password\r\n\r\n".encode())
+    c.check("a request with a folded header line is refused with 400 and never reaches the app", answer.startswith(b"HTTP/1.1 400") and STATE.paths == [], (answer[:80], STATE.paths))
+    STATE.paths.clear()
     answer, closed = raw(f"GET /public/x HTTP/1.1\r\n{upgrade}Content-Length: 5\r\n\r\nhello".encode())
     c.check("an upgrade request with a body is refused with 400 and never reaches the app", answer.startswith(b"HTTP/1.1 400") and closed and STATE.paths == [], (answer[:80], closed, STATE.paths))
 
