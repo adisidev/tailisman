@@ -38,7 +38,7 @@ The token is `tsm1.<base64url payload>.<base64url HMAC-SHA256>`. The payload hol
 ### 1. Run the issuer on a tailnet host
 
 ```sh
-uv tool install tailisman            # or: uv pip install tailisman
+uv tool install git+https://github.com/adisidev/tailisman   # not on PyPI
 tailisman keygen /etc/tailisman/secret
 cp issuer.example.toml /etc/tailisman/issuer.toml   # then edit devices and audiences
 tailisman run --config /etc/tailisman/issuer.toml
@@ -181,14 +181,50 @@ uv run --with playwright python e2e/browser_check.py --demo https://demo.example
 
 ## Findings
 
+These come from one live run on a real tailnet on 23 October 2026, with Tailscale 1.102.4 on macOS. The issuer ran on one Mac behind `tailscale serve --https=8443`. The demo consumer ran behind a temporary public HTTPS tunnel, so the browsers saw a real public origin calling a tailnet address, which is the situation a site behind Cloudflare is in. A page on `http://localhost` would not show the same behaviour, because browsers treat loopback as more private than the tailnet.
+
+### What worked
+
+- An allowlisted Mac got a token from the issuer, and so did a second allowlisted Mac over the tailnet. Both verifiers (Python and Node) accepted the token, refused it a second time as `replayed`, refused it under a different audience as `wrong_audience`, refused a tampered copy as `bad_signature`, and refused it after 60 seconds as `expired`.
+- With the first Mac removed from the allowlist, its requests got `not_on_allowlist`, while the second Mac still got a token. A Linux tailnet machine that was never on the allowlist also got `not_on_allowlist`.
+- A request that sent its own `X-Forwarded-For` and `Tailscale-User-Login` headers was still identified as the device it really came from. `tailscale serve` replaces both headers before the issuer sees them.
+- An unknown `Origin` got a 403 with no CORS headers, so a browser on another site cannot read the answer.
+- From a server that is not on the tailnet, the issuer's name did not resolve (`curl` exit 6), and connecting to its tailnet IP directly timed out (`curl` exit 28). Public DNS has no record for the name.
+
 ### Browser matrix
 
-To be filled from the live run.
+| Browser (Playwright, headless) | Silent fetch | Button (top-level navigation) |
+| --- | --- | --- |
+| Chrome 155 with the Local Network Access permission granted | signed in | not needed |
+| Chrome 155 without the permission | blocked, button shown | signed in |
+| WebKit 27.2 (the engine inside Safari) | signed in, no prompt | not tested |
+| Firefox 157 | waits on a permission prompt, then times out, button shown | signed in |
+| Chrome 155 with the issuer name made unresolvable, to stand in for a visitor off the tailnet | fails at DNS, button shown, no prompt | not tested |
+
+On the navigation path the consumer's `Set-Cookie` on the answer to the issuer's cross-site form POST was kept in both Chrome and Firefox, and the page showed the visitor as signed in.
+
+Not tested: real Safari on macOS, Safari on iPhone and iPad, Chrome on Android, and the permission prompt as a person sees it in a normal (headed) Chrome or Firefox window. A headless browser cannot show a prompt, so Chrome denies straight away and Firefox waits.
 
 ### Local Network Access
 
-To be filled from the live run.
+This is the main thing to know. Chrome 155 and Firefox 157 treat tailnet addresses (100.64.0.0/10) as the `local` address space. A page on a public origin that fetches a `local` address needs the Local Network Access permission for that site. Chrome's console message was "Permission was denied for this request to access the `local` address space", and Firefox's was "Local Network Access permission required". CORS headers alone do not help. Chrome sent no preflight in these runs, so the older `Access-Control-Allow-Private-Network` response header (which the issuer still sends) made no difference.
+
+What does work:
+
+1. Granting the permission once per site. After that the silent fetch works with no visible step. In Chrome, `navigator.permissions.query({name: "local-network-access"})` reports the state. Firefox and WebKit do not support that query.
+2. A top-level navigation. Clicking a link or button that goes to the issuer is not gated in any browser tested. That is why the snippet falls back to a button and the issuer answers `/v1/start` with a form that posts the token back.
+3. Safari's engine has no such gate, so the silent fetch just works there.
+
+The browser checks Local Network Access after DNS. A visitor who is not on the tailnet fails at DNS first and never sees a prompt.
+
+The snippet passes `targetAddressSpace: "local"` to `fetch`. Chrome fails the fetch if the declared space does not match where the address really is, so a local test against an issuer on 127.0.0.1 needs `"loopback"` instead.
 
 ### Security caveats
 
-To be filled from the live run.
+- The device allowlist is the real control. Anything that runs on an allowlisted device can get a token. A script or AI agent on your laptop can call the issuer with any `Origin` header it likes (curl can), get a token, and sign in to your site as you. tailisman cannot tell your browser from your agent on the same machine. Keep the allowlist to devices where that is acceptable.
+- The automation refusal is a speed bump. With `refuse_automation = true`, a default Playwright Chrome was refused as `automation`. The same browser with `navigator.webdriver` overridden, Playwright's globals removed and a normal user agent signed in. That took three lines.
+- Loopback TCP trusts every local user of the issuer host, as described above. A unix socket narrows this on Linux but does not work under the macOS Tailscale app.
+- Each consumer's key can sign tokens for that consumer. That is no worse than the consumer itself being compromised, since it controls its own sessions. The master secret stays on the issuer host.
+- A token is a bearer token for up to 60 seconds. The verifier refuses a second use of the same nonce, but only within one replay store. A server with several processes needs a shared store.
+- Tagged devices are always refused, because they have no user identity.
+- The issuer refuses Funnel traffic, and `tailisman check` reports Funnel. Do not turn Funnel on for the issuer anyway.
