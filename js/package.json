@@ -5,11 +5,15 @@
   "license": "MIT",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./src/index.js"
+    }
   },
-  "files": ["src"],
+  "types": "./index.d.ts",
+  "files": ["src", "index.d.ts"],
   "engines": {
-    "node": ">=22.18"
+    "node": ">=22"
   },
   "scripts": {
     "test": "node --test"

@@ -91,7 +91,17 @@ def exchange(content_type: str, body: bytes):
     return claim.node_id, claim.node_name, claim.login
 ```
 
-Node runs the package's TypeScript sources directly, so it needs a Node that strips types by default (22.18 or later; tested on 26). Node refuses to strip types for files under `node_modules`, so install it as a link with `npm install /path/to/tailisman/js` (npm links a local folder) or copy `js/src` into your project. There is no published build yet.
+The Node package is plain ES modules with JSDoc types and a hand-written `index.d.ts`, no build step and no dependencies. It is not on npm, and npm cannot install a subdirectory of a git repository, so install it from a checkout:
+
+```sh
+git clone https://github.com/adisidev/tailisman
+npm install --install-links ./tailisman/js     # copies the package into node_modules
+# or build a tarball and install that
+(cd tailisman/js && npm pack)                   # writes tailisman-0.1.0.tgz
+npm install ./tailisman/js/tailisman-0.1.0.tgz
+```
+
+Plain `npm install ./tailisman/js` also works, but it links to the checkout instead of copying it. Both routes were tested on Node 22 and 26. It needs Node 22 or later, because it reads JSON numbers' source text to refuse a float `iat`, which older Node cannot do; on Node 20 the `Verifier` constructor throws instead of refusing every token.
 
 ```ts
 import { TailismanError, Verifier, extractToken } from "tailisman";
@@ -170,7 +180,7 @@ With loopback TCP, any process on the issuer host can connect to the issuer, sen
 
 ```sh
 uv run --with pytest pytest          # Python verifier, issuer, CLI, demo
-node --test js/                      # Node verifier and the snippet with stubbed browser globals
+node --test js/                      # Node verifier and the snippet with stubbed browser globals (the tests are TypeScript, so Node 22.18 or later)
 uv run python scripts/make_vectors.py  # regenerate testdata/vectors.json; a test fails if it is stale
 ```
 

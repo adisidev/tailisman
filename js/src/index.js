@@ -1,31 +1,33 @@
-import { type Claim, TailismanError, decode, normaliseOrigin, parseKey } from "./token.ts";
-import { InMemoryReplayStore, type ReplayStore } from "./replay.ts";
+import { SOURCE_TEXT, TailismanError, decode, normaliseOrigin, parseKey } from "./token.js";
+import { InMemoryReplayStore } from "./replay.js";
 
-export { type Claim, type ErrorCode, ERROR_CODES, TailismanError } from "./token.ts";
-export { InMemoryReplayStore, type ReplayStore } from "./replay.ts";
+export { ERROR_CODES, TailismanError } from "./token.js";
+export { InMemoryReplayStore } from "./replay.js";
+
+/** @typedef {import("../index.js").Claim} Claim */
+/** @typedef {import("../index.js").ReplayStore} ReplayStore */
+/** @typedef {import("../index.js").VerifierOptions} VerifierOptions */
 
 export const MAX_BODY = 16 * 1024;
 export const MAX_TOKEN = 4096;
 
-export interface VerifierOptions {
-  key: string;
-  audience: string;
-  replay?: ReplayStore;
-  devices?: Iterable<string>;
-  leeway?: number;
-  /** Seconds since the epoch. */
-  clock?: () => number;
-}
-
 export class Verifier {
-  readonly #key: Buffer;
-  readonly #audience: string;
-  readonly #replay: ReplayStore;
-  readonly #devices: ReadonlySet<string> | null;
-  readonly #leeway: number;
-  readonly #clock: () => number;
+  /** @type {Buffer} */
+  #key;
+  /** @type {string} */
+  #audience;
+  /** @type {ReplayStore} */
+  #replay;
+  /** @type {ReadonlySet<string> | null} */
+  #devices;
+  /** @type {number} */
+  #leeway;
+  /** @type {() => number} */
+  #clock;
 
-  constructor(opts: VerifierOptions) {
+  /** @param {VerifierOptions} opts */
+  constructor(opts) {
+    if (!SOURCE_TEXT) throw new Error(`tailisman needs Node 22 or later; this is ${process.version}`);
     const leeway = opts.leeway ?? 5;
     if (!Number.isSafeInteger(leeway) || leeway < 0) throw new RangeError("leeway must be a non-negative integer number of seconds");
     this.#key = parseKey(opts.key);
@@ -36,7 +38,11 @@ export class Verifier {
     this.#clock = opts.clock ?? (() => Date.now() / 1000);
   }
 
-  verify(token: string): Claim {
+  /**
+   * @param {string} token
+   * @returns {Claim}
+   */
+  verify(token) {
     const claim = decode(token, this.#key);
     if (claim.audience !== this.#audience) throw new TailismanError("wrong_audience", `token is for ${claim.audience}`);
     const now = Math.floor(this.#clock());
@@ -50,16 +56,23 @@ export class Verifier {
   }
 }
 
-export function extractToken(contentType: string | undefined | null, body: string | Uint8Array): string {
-  const mediaType = (contentType ?? "").split(";")[0]!.trim().toLowerCase();
+/**
+ * @param {string | undefined | null} contentType
+ * @param {string | Uint8Array} body
+ * @returns {string}
+ */
+export function extractToken(contentType, body) {
+  const mediaType = (contentType ?? "").split(";")[0].trim().toLowerCase();
   const size = typeof body === "string" ? Buffer.byteLength(body) : body.byteLength;
   if (size > MAX_BODY) throw new TailismanError("malformed", `body is over ${MAX_BODY} bytes`);
-  let token: unknown = null;
+  /** @type {unknown} */
+  let token = null;
   try {
     const text = typeof body === "string" ? body : new TextDecoder("utf-8", { fatal: true }).decode(body);
     if (mediaType === "application/json") {
-      const parsed: unknown = JSON.parse(text);
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) token = (parsed as Record<string, unknown>).token;
+      /** @type {unknown} */
+      const parsed = JSON.parse(text);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) token = /** @type {Record<string, unknown>} */ (parsed).token;
     } else if (mediaType === "application/x-www-form-urlencoded") {
       const values = new URLSearchParams(text).getAll("token");
       if (values.length === 1) token = values[0];

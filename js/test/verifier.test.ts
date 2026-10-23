@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 
-import { InMemoryReplayStore, MAX_BODY, MAX_TOKEN, TailismanError, Verifier, extractToken, type ErrorCode } from "../src/index.ts";
-import { deriveConsumerKey, formatKey } from "../src/token.ts";
+import { InMemoryReplayStore, MAX_BODY, MAX_TOKEN, TailismanError, Verifier, extractToken, type ErrorCode } from "../src/index.js";
+import { deriveConsumerKey, formatKey } from "../src/token.js";
 
 const AUD = "https://heckle.example.com";
 const KEY = deriveConsumerKey(Buffer.alloc(32, 7), AUD);

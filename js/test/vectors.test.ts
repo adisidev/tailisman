@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { TailismanError, Verifier } from "../src/index.ts";
-import { deriveConsumerKey, formatKey, normaliseOrigin } from "../src/token.ts";
+import { TailismanError, Verifier } from "../src/index.js";
+import { deriveConsumerKey, formatKey, normaliseOrigin } from "../src/token.js";
 
 const vectors = JSON.parse(readFileSync(new URL("../../testdata/vectors.json", import.meta.url), "utf8"));
 
