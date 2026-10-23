@@ -142,7 +142,12 @@ def relay(handler: http.server.BaseHTTPRequestHandler, upstream: Upstream, ident
         for piece in _request_body(handler, body):
             conn.send(piece)
         response = conn.getresponse()
-    except (OSError, ValueError, http.client.HTTPException, BadRequest) as exc:
+    except BadRequest as exc:
+        conn.close()
+        handler.close_connection = True
+        handler.send_error(400, str(exc))
+        return None
+    except (OSError, ValueError, http.client.HTTPException) as exc:
         conn.close()
         _bad_gateway(handler)
         return f"request failed: {exc}"

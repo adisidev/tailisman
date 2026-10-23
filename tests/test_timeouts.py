@@ -104,7 +104,7 @@ def test_the_tailnet_listener_closes_a_connection_that_sends_nothing(tmp_path, m
             server.server_close()
 
 
-@pytest.mark.parametrize("trailers,status", [(2, 200), (33, 502)])
+@pytest.mark.parametrize("trailers,status", [(2, 200), (33, 400)])
 def test_a_chunked_body_may_carry_a_few_trailer_lines_but_not_an_endless_stream(gate, trailers, status):
     sock = socket.create_connection(gate, timeout=10)
     lines = "".join(f"X-Sum-{n}: {n}\r\n" for n in range(trailers))
@@ -122,4 +122,4 @@ def test_a_chunk_size_that_is_not_plain_hex_is_refused(gate, size):
     response = http.client.HTTPResponse(sock)
     response.begin()
     sock.close()
-    assert response.status == 502
+    assert response.status == 400
