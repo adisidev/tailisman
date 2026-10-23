@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import time
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 
 from .. import Verifier
@@ -86,15 +88,16 @@ def host_without_port(key: str) -> str:
     return key.rsplit(":", 1)[0]
 
 
-def load_config(path: str | Path) -> GateConfig:
+def load_config(path: str | Path, clock: Callable[[], float] = time.time) -> GateConfig:
     try:
         raw = tomllib.loads(Path(path).read_text())
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    return parse_config(raw, base=Path(path).parent)
+    return parse_config(raw, base=Path(path).parent, clock=clock)
 
 
-def parse_config(raw: dict, base: Path = Path(".")) -> GateConfig:
+def parse_config(raw: dict, base: Path = Path("."), clock: Callable[[], float] = time.time) -> GateConfig:
+    """`clock` drives each site's token Verifier; the gate passes its own so one clock rules every expiry check."""
     _no_unknown_keys(raw, _TOP_KEYS, "top level")
     secret_path = base / _required_str(raw, "session_secret_file")
     try:
@@ -125,7 +128,7 @@ def parse_config(raw: dict, base: Path = Path(".")) -> GateConfig:
     if not isinstance(entries, list) or not entries:
         raise ConfigError("at least one [[sites]] table is required")
     for entry in entries:
-        site = _site(entry, issuer)
+        site = _site(entry, issuer, clock)
         if site.host in sites:
             raise ConfigError(f"site {site.host} is configured twice")
         sites[site.host] = site
@@ -159,7 +162,7 @@ def is_plain_path(path: str) -> bool:
     return ".." not in path.split("/")
 
 
-def _site(entry: object, issuer: str | None) -> Site:
+def _site(entry: object, issuer: str | None, clock: Callable[[], float]) -> Site:
     if not isinstance(entry, dict):
         raise ConfigError("each [[sites]] entry must be a table")
     _no_unknown_keys(entry, _SITE_KEYS, "[[sites]]")
@@ -179,7 +182,7 @@ def _site(entry: object, issuer: str | None) -> Site:
         if issuer is None:
             raise ConfigError(f"site {host} has a tailisman_key but the gate has no issuer; set issuer at the top level")
         try:
-            verifier = Verifier(key=_required_str(entry, "tailisman_key"), audience="https://" + host)
+            verifier = Verifier(key=_required_str(entry, "tailisman_key"), audience="https://" + host, clock=clock)
         except TailismanError as exc:
             raise ConfigError(f"site {host} tailisman_key: {exc}") from exc
     rules = entry.get("open", [])
