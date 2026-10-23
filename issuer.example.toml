@@ -4,8 +4,9 @@ secret_file = "/etc/tailisman/secret"   # 32 bytes from `tailisman keygen`; rela
 listen = "127.0.0.1:8470"               # loopback only; or "unix:/run/tailisman/issuer.sock"
 ttl_seconds = 60                        # 10 to 300
 tailscale_bin = "auto"                  # the macOS app binary, then `tailscale` on PATH; or an absolute path
+# serve_host = "issuer.example-tailnet.ts.net"   # the only Host the issuer answers; default: Self.DNSName from `tailscale status --json`
 
-# Default device allowlist. An entry is a node stable ID (survives renames), a short name, or a MagicDNS name.
+# Default device allowlist. Prefer stable IDs: they survive renames, while short names and MagicDNS names are neither unique nor stable.
 devices = ["nEXAMPLE1CNTRL", "phone"]
 
 [[audiences]]

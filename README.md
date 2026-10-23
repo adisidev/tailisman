@@ -27,7 +27,7 @@ There are three parts in this repository, all MIT licensed.
  <-----------------------------------   Set-Cookie: its own session
 ```
 
-The silent fetch works without a prompt in Safari. Chrome and Firefox gate it behind a one-time Local Network Access permission per site. When the fetch fails, the snippet shows a button. Clicking it navigates to the issuer, which answers with a form that posts the token back to the same `/auth/tailisman` endpoint. A top-level navigation is never gated, so the button works in every browser.
+In Playwright's WebKit build (WebKit 27.2, headless) the silent fetch worked without a prompt. Real Safari on macOS and iOS has not been tested. Chrome and Firefox gate it behind a one-time Local Network Access permission per site. When the fetch fails, the snippet shows a button. Clicking it navigates to the issuer, which answers with a form that posts the token back to the same `/auth/tailisman` endpoint. A top-level navigation is never gated, so the button works in every browser.
 
 A visitor who is not on the tailnet cannot resolve the issuer's `*.ts.net` name, so their fetch fails at DNS and they never see a permission prompt. They see the button only, and clicking it leads to a DNS error page.
 
@@ -37,13 +37,24 @@ The token is `tsm1.<base64url payload>.<base64url HMAC-SHA256>`. The payload hol
 
 ### 1. Run the issuer on a tailnet host
 
+The issuer needs Python 3.11 or later and is not on PyPI.
+
 ```sh
-uv tool install git+https://github.com/adisidev/tailisman   # not on PyPI
-tailisman keygen /etc/tailisman/secret
-cp issuer.example.toml /etc/tailisman/issuer.toml   # then edit devices and audiences
-tailisman run --config /etc/tailisman/issuer.toml
+uv tool install git+https://github.com/adisidev/tailisman
+mkdir -p ~/.config/tailisman
+tailisman keygen ~/.config/tailisman/secret
+cp issuer.example.toml ~/.config/tailisman/issuer.toml   # from a checkout of this repository; set secret_file = "secret", then edit devices and audiences
+```
+
+`/etc/tailisman` works too, but writing there needs root. Then start the issuer. `tailisman run` stays in the foreground, so run it under a service manager (systemd, launchd) or in a terminal of its own, and add the serve handler from another one.
+
+```sh
+tailisman run --config ~/.config/tailisman/issuer.toml
+```
+
+```sh
 tailscale serve --bg --https=8443 http://127.0.0.1:8470
-tailisman check --config /etc/tailisman/issuer.toml
+tailisman check --config ~/.config/tailisman/issuer.toml
 ```
 
 Never put the issuer behind `tailscale funnel`. The issuer refuses any request that carries serve's `Tailscale-Funnel-Request` header, and `tailisman check` exits non-zero when Funnel is on for the host that proxies to the issuer.
@@ -53,7 +64,7 @@ Open `https://<issuer-host>.example-tailnet.ts.net:8443/` from any of your devic
 ### 2. Give each consumer its key
 
 ```sh
-tailisman key --config /etc/tailisman/issuer.toml --aud https://heckle.example.com
+tailisman key --config ~/.config/tailisman/issuer.toml --aud https://heckle.example.com
 # tsk1.<43 base64url characters>
 ```
 
@@ -78,7 +89,13 @@ Serve `client/tailisman.js` from your own origin.
 
 ### 4. Verify on the server
 
-Python:
+The Python verifier is the same package as the issuer, standard library only, Python 3.11 or later. Add it to a consumer project from git:
+
+```sh
+uv add "tailisman @ git+https://github.com/adisidev/tailisman"
+# or, in an environment you manage yourself
+uv pip install "git+https://github.com/adisidev/tailisman"
+```
 
 ```python
 import os
@@ -110,7 +127,7 @@ const verifier = new Verifier({ key: process.env.TAILISMAN_KEY!, audience: "http
 const claim = verifier.verify(extractToken(req.headers["content-type"], body));   // throws TailismanError with .code
 ```
 
-Answer the JSON body (silent path) with a 2xx and the form body (navigation path) with a 303 to a page, and set your own cookie in both. `demo/consumer.py` is a complete consumer in about a hundred lines.
+Answer the JSON body (silent path) with a 2xx and the form body (navigation path) with a 303 to a page, and set your own cookie in both. Keep that 303 within your own origin. The issuer's `/v1/start` page has a `form-action` CSP that allows only your origin, and CSP applies `form-action` to redirects after the form post as well, so an exchange that redirects to another origin is blocked. `demo/consumer.py` is a complete consumer in about a hundred lines.
 
 ## The verifier
 
@@ -154,13 +171,19 @@ The snippet sends `a=1` when it sees cheap signs of automation: `navigator.webdr
 | `ttl_seconds` | `60` | Token lifetime, 10 to 300. |
 | `tailscale_bin` | `"auto"` | `auto` tries `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, then `tailscale` on PATH. |
 | `serve_host` | this node's MagicDNS name | The only `Host` (and `X-Forwarded-Host`) the issuer answers, such as `issuer.example-tailnet.ts.net`. Left out, the issuer reads `Self.DNSName` from `tailscale status --json` once at startup and refuses to start if it cannot. |
-| `devices` | `[]` | Default allowlist. An entry matches a node by stable ID (exact), short name, or MagicDNS name with or without the trailing dot. |
+| `devices` | `[]` | Default allowlist. An entry matches a node by stable ID (exact), short name, or MagicDNS name with or without the trailing dot. Use stable IDs (see below). |
 | `[[audiences]] origin` | required | The consumer's origin. This one list is the CORS allowlist, the `return_to` allowlist and the set of keys. |
 | `[[audiences]] devices` | top-level `devices` | Replaces the default allowlist for this origin. |
 | `[[audiences]] users` | any user | Logins allowed on this origin. |
 | `[[audiences]] refuse_automation` | `false` | Refuse requests with `a=1` or a `HeadlessChrome` user agent. |
 
 The issuer refuses with one of these codes, checked in this order: `wrong_host` (421), `not_behind_serve` (421), `funnel_request`, `unknown_audience`, `unknown_peer`, `tagged_node`, `identity_mismatch`, `not_on_allowlist`, `user_not_allowed`, `automation` (all 403). Tagged nodes are always refused.
+
+### Allowlist entries: use stable IDs
+
+A stable ID such as `nEXAMPLE1CNTRL` names one node and survives renames. Short names (`laptop`) and MagicDNS names are neither unique nor stable. A device that is renamed, or a node shared into your tailnet from another tailnet, can carry a name that is already on your list. The issuer's status page prints the stable ID line for the device you open it on.
+
+The verifier's own `devices` re-check is narrower than the issuer's matching. It compares the token's stable ID or short name exactly and case-sensitively, and never MagicDNS names, so `Laptop` or `laptop.example-tailnet.ts.net` in a verifier list matches nothing.
 
 ### Routes
 
@@ -184,7 +207,7 @@ node --test js/                      # Node verifier and the snippet with stubbe
 uv run python scripts/make_vectors.py  # regenerate testdata/vectors.json; a test fails if it is stale
 ```
 
-`e2e/browser_check.py` loads the demo consumer in a real browser and prints one JSON line of evidence. For a local run without a tailnet, `e2e/fake_tailscale.py` answers `whois` from a JSON file and `e2e/fake_serve.py` adds the headers serve would.
+`e2e/browser_check.py` loads the demo consumer in a real browser and prints one JSON line of evidence. `--spoof-automation` hides the automation signals and `--simulate-off-tailnet` makes `*.ts.net` unresolvable in Chrome. For a local run without a tailnet, `e2e/fake_tailscale.py` answers `whois` and `status` from a JSON file and `e2e/fake_serve.py` adds the headers serve would (it passes `Host` through, so set `serve_host = "127.0.0.1"` for such a run). `e2e/LIVE.md` is the live sequence on a real tailnet.
 
 ```sh
 uv run --with playwright python e2e/browser_check.py --demo https://demo.example.com --browser chromium --grant-lna --expect signed-in
@@ -192,7 +215,7 @@ uv run --with playwright python e2e/browser_check.py --demo https://demo.example
 
 ## Findings
 
-These come from one live run on a real tailnet on 23 October 2026, with Tailscale 1.102.4 on macOS. The issuer ran on one Mac behind `tailscale serve --https=8443`. The demo consumer ran behind a temporary public HTTPS tunnel, so the browsers saw a real public origin calling a tailnet address, which is the situation a site behind Cloudflare is in. A page on `http://localhost` would not show the same behaviour, because browsers treat loopback as more private than the tailnet.
+These come from one live run on a real tailnet on 23 October 2026, with Tailscale 1.102.4 on macOS. `e2e/LIVE.md` is the sequence to repeat it on your own tailnet. The issuer ran on one Mac behind `tailscale serve --https=8443`. The demo consumer ran behind a temporary public HTTPS tunnel, so the browsers saw a real public origin calling a tailnet address, which is the situation a site behind Cloudflare is in. A page on `http://localhost` would not show the same behaviour, because browsers treat loopback as more private than the tailnet.
 
 ### What worked
 
@@ -208,7 +231,7 @@ These come from one live run on a real tailnet on 23 October 2026, with Tailscal
 | --- | --- | --- |
 | Chrome 155 with the Local Network Access permission granted | signed in | not needed |
 | Chrome 155 without the permission | blocked, button shown | signed in |
-| WebKit 27.2 (the engine inside Safari) | signed in, no prompt | not tested |
+| WebKit 27.2 (Playwright's build, not Safari itself) | signed in, no prompt | not tested |
 | Firefox 157 | waits on a permission prompt, then times out, button shown | signed in |
 | Chrome 155 with the issuer name made unresolvable, to stand in for a visitor off the tailnet | fails at DNS, button shown, no prompt | not tested |
 
@@ -224,7 +247,7 @@ What does work:
 
 1. Granting the permission once per site. After that the silent fetch works with no visible step. In Chrome, `navigator.permissions.query({name: "local-network-access"})` reports the state. Firefox and WebKit do not support that query.
 2. A top-level navigation. Clicking a link or button that goes to the issuer is not gated in any browser tested. That is why the snippet falls back to a button and the issuer answers `/v1/start` with a form that posts the token back.
-3. Safari's engine has no such gate, so the silent fetch just works there.
+3. WebKit 27.2 under Playwright, headless, showed no such gate, and the silent fetch just worked there. Real Safari on macOS and iOS was not run, so whether Safari itself gates it is untested.
 
 The browser checks Local Network Access after DNS. A visitor who is not on the tailnet fails at DNS first and never sees a prompt.
 
@@ -239,4 +262,6 @@ The snippet passes `targetAddressSpace: "local"` to `fetch`. Chrome fails the fe
 - Each consumer's key can sign tokens for that consumer. That is no worse than the consumer itself being compromised, since it controls its own sessions. The master secret stays on the issuer host.
 - A token is a bearer token for up to 60 seconds. The verifier refuses a second use of the same nonce, but only within one replay store. A server with several processes needs a shared store.
 - Tagged devices are always refused, because they have no user identity.
+- Login CSRF. Anyone can send a visitor to `/v1/start` or post a token to a consumer's exchange, so a token minted on one allowlisted device could sign another visitor's browser in as that device's identity. With a single-owner allowlist this is harmless, since every identity is yours. It matters when an audience allows several users. A consumer that cares should keep one user per audience, or refuse a claim whose login differs from the session the browser already has.
+- Each claim runs one `tailscale whois` subprocess, and any peer on your tailnet can make the issuer run it as often as it likes. That is a known limitation of v0.1, which has no whois cache and no rate limit.
 - The issuer refuses Funnel traffic, and `tailisman check` reports Funnel. Do not turn Funnel on for the issuer anyway.

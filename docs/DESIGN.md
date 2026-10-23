@@ -38,7 +38,7 @@ The MAC covers the ASCII bytes `tsm1.<payload-b64>`, so neither side canonicalis
 
 ## Identity
 
-`decide()` in `src/tailisman/issuer/decision.py` is the only place that refuses. It checks, in order, that the request came through serve (`X-Forwarded-Proto: https` and exactly one `X-Forwarded-For`), that it is not Funnel traffic, that the origin is a configured audience, that `whois` knows the peer, that the node is not tagged, that serve's login header matches `whois`, that the device is on the audience's allowlist, that the user is allowed, and the automation policy. The status page calls the same function for each audience, so it cannot disagree with what `/v1/claim` would do.
+`decide()` in `src/tailisman/issuer/decision.py` is the only place that refuses. It checks, in order, that `Host` (and `X-Forwarded-Host`, when present) is the issuer's own serve name, which stops a DNS-rebinding page that reaches the loopback listener with forged headers, that the request came through serve (`X-Forwarded-Proto: https` and exactly one `X-Forwarded-For`), that it is not Funnel traffic, that the origin is a configured audience, that `whois` knows the peer, that the node is not tagged, that serve's login header matches `whois`, that the device is on the audience's allowlist, that the user is allowed, and the automation policy. The status page calls the same function for each audience, so it cannot disagree with what `/v1/claim` would do.
 
 The `audiences` table, keyed by normalised origin, is the CORS allowlist, the `return_to` allowlist and the key list. An origin cannot be configured for one and not the others.
 
