@@ -195,5 +195,5 @@ def test_status_counts_guests_per_site_without_naming_them(gate_dir, capsys):
     capsys.readouterr()
     main(["gate", "status", "--config", str(gate_dir / "gate.toml"), "--base-url-for", f"{A}=http://127.0.0.1:9", "--base-url-for", f"{B}=http://127.0.0.1:9"])
     out = capsys.readouterr().out
-    assert "a.example.com: scope example.com, tailnet off, guests 1," in out and "b.example.com: scope example.com, tailnet off, guests 2," in out
+    assert "a.example.com: forward_auth, scope example.com, tailnet off, guests 1," in out and "b.example.com: forward_auth, scope example.com, tailnet off, guests 2," in out
     assert "alice" not in out and "bob" not in out

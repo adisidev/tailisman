@@ -9,7 +9,7 @@ There are four parts in this repository, all MIT licensed.
 - The issuer is a small Python HTTP server on a tailnet host, reachable only through `tailscale serve`.
 - The browser snippet is `client/tailisman.js`, one ES module with no dependencies.
 - The verifiers are a Python package (`tailisman`, standard library only) and a Node package (`js/`, `node:crypto` only).
-- The gate (`tailisman gate`) signs visitors in to whole sites behind Caddy, through the issuer or with a backup password, with no change to the apps. See [docs/GATE.md](docs/GATE.md).
+- The gate (`tailisman gate`) signs visitors in to whole sites, through the issuer, a backup password or a guest password, with no change to the apps. It proxies sites itself behind a Cloudflare Tunnel, or answers Caddy's `forward_auth`. See [docs/GATE.md](docs/GATE.md).
 
 ## How it works
 
@@ -200,9 +200,9 @@ With loopback TCP, any process on the issuer host can connect to the issuer, sen
 
 `refuse_automation` stops a default Playwright, Puppeteer or headless Chrome session. It does not stop anyone who sets `navigator.webdriver` to false or edits the snippet, because the browser reports these signals about itself. Leave it off for sites where your own agents should sign in.
 
-## Gating whole sites with Caddy
+## Gating whole sites
 
-The gate is for sites you do not want to change. Caddy asks it about every request through `forward_auth`. A browser on an allowlisted tailnet device is signed in through the issuer, and any other browser gets a password form. One sign-in can cover every host under a domain. [docs/GATE.md](docs/GATE.md) has the request flow, the config reference, service files and the caveats.
+The gate is for sites you do not want to change. A browser on an allowlisted tailnet device is signed in through the issuer, and any other browser gets a password form. One sign-in can cover every host under a domain, and named guest passwords open only the sites they were given, revocable one at a time. Behind a Cloudflare Tunnel the gate is the proxy: the tunnel points every gated hostname at the gate, and each site's `upstream` names the app's loopback port, with streaming, uploads, Range requests and websockets passed through. Behind Caddy, Caddy asks the gate about every request through `forward_auth`. [docs/GATE.md](docs/GATE.md) has both setups, the config reference, guests, service files and the caveats.
 
 ```sh
 tailisman keygen ~/.config/tailisman/gate-secret
@@ -210,6 +210,8 @@ cp gate.example.toml ~/.config/tailisman/gate.toml      # edit sites, issuer and
 tailisman passwd --config ~/.config/tailisman/gate.toml --generate --out ~/.config/tailisman/gate-passphrase
 tailisman gate run --config ~/.config/tailisman/gate.toml
 ```
+
+For a tunnel, give each `[[sites]]` entry an `upstream = "http://127.0.0.1:9000"` and set the tunnel's ingress `service` for that hostname to `http://127.0.0.1:8471`. For Caddy:
 
 ```caddy
 (tailisman_gate) {
@@ -229,7 +231,7 @@ tools.example.com {
 }
 ```
 
-`tailisman gate status --config ~/.config/tailisman/gate.toml` then checks that every site sends an anonymous visitor to the sign-in page.
+`tailisman gate status --config ~/.config/tailisman/gate.toml` then checks that every site sends an anonymous visitor to the sign-in page. `tailisman passwd --config ... --add NAME --sites HOST[,HOST]` gives someone a guest password.
 
 ## Development
 

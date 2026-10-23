@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import http.client
+import socket
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -182,12 +183,13 @@ def _status(args: argparse.Namespace) -> int:
     credentials = Credentials(config.session_secret, config.password_file, config.guest_file)
     failed = False
     for site in config.sites.values():
-        problems = _probe(site, bases.get(site.host, f"https://{site.host}"))
+        problems = _probe(site, bases.get(site.host, f"https://{site.host}")) + _probe_upstream(site)
         failed = failed or bool(problems)
         tailnet = "on" if config.issuer and site.verifier else "off"
         rules = ", ".join(str(rule) for rule in site.open) or "none"
         guests = credentials.guest_count(site.host)
-        print(f"{site.host}: scope {site.scope}, tailnet {tailnet}, guests {guests}, open {rules}: {'; '.join(problems) or 'ok'}")
+        mode = f"upstream {site.upstream}" if site.upstream else "forward_auth"
+        print(f"{site.host}: {mode}, scope {site.scope}, tailnet {tailnet}, guests {guests}, open {rules}: {'; '.join(problems) or 'ok'}")
     return 1 if failed else 0
 
 
@@ -214,6 +216,16 @@ def _probe(site: Site, base: str) -> list[str]:
     except (OSError, http.client.HTTPException) as exc:
         problems.append(f"could not reach {base}: {exc}")
     return problems
+
+
+def _probe_upstream(site: Site) -> list[str]:
+    if site.upstream is None:
+        return []
+    try:
+        socket.create_connection((site.upstream.host, site.upstream.port), timeout=3).close()
+    except OSError as exc:
+        return [f"upstream {site.upstream} is not accepting connections: {exc}"]
+    return []
 
 
 def _get(base: str, path: str, host: str) -> tuple[int, str, bytes]:

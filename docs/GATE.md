@@ -1,8 +1,8 @@
 # tailisman gate
 
-The gate puts one sign-in in front of any number of sites served by Caddy, with no change to the apps behind them. A browser on one of your allowlisted tailnet devices is let in through the existing tailisman issuer, usually without a click. Every other browser gets a password form, so a borrowed laptop, a phone off the tailnet or a Chrome that has not yet been granted Local Network Access can still get in with the backup password.
+The gate puts one sign-in in front of any number of sites, with no change to the apps behind them. A browser on one of your allowlisted tailnet devices is let in through the existing tailisman issuer, usually without a click. Every other browser gets a password form, so a borrowed laptop, a phone off the tailnet or a Chrome that has not yet been granted Local Network Access can still get in with the backup password.
 
-Each site needs one Caddy `import` line. The gate is a small standard-library Python server on loopback. Caddy asks it about every request through `forward_auth`, and proxies the gate's own pages under `/.tailisman/` on each site to it.
+The gate is a small standard-library Python server on loopback, and each site uses it in one of two ways. In proxy mode, for pages published through a Cloudflare Tunnel, the tunnel sends the site's traffic to the gate and the gate forwards each allowed request to the app. In `forward_auth` mode, for sites served by Caddy, Caddy asks the gate about every request and proxies the gate's own pages under `/.tailisman/` to it. One gate serves both kinds of site at once, and both ask the same decision function.
 
 ## Request flow
 
@@ -44,11 +44,55 @@ For the tailnet path, add each gated origin as an audience in the issuer's `issu
 tailisman key --config ~/.config/tailisman/issuer.toml --aud https://tools.example.com
 ```
 
-Then add the snippet to the Caddyfile, reload Caddy, and check every site from outside:
+Then either point the tunnel at the gate and give each site an `upstream` (proxy mode, below), or add the snippet to the Caddyfile and reload Caddy. Check every site from outside:
 
 ```sh
 tailisman gate status --config ~/.config/tailisman/gate.toml
 ```
+
+It prints each site's upstream (or `forward_auth`), scope and guest count, checks that an anonymous visitor is sent to sign in, and for a proxy site that its upstream accepts connections.
+
+## Cloudflare Tunnel (proxy mode, no Caddy)
+
+This is the simplest setup when the pages go through a tunnel. cloudflared terminates TLS but has no way to ask anyone before it hands a request to the app, so point the tunnel at the gate and give each site an `upstream`, the app's own loopback port:
+
+```yaml
+# ~/.cloudflared/config.yml
+ingress:
+  - hostname: tools.example.com
+    service: http://127.0.0.1:8471
+  - hostname: notes.example.com
+    service: http://127.0.0.1:8471
+  - service: http_status:404
+```
+
+```toml
+[[sites]]
+host = "tools.example.com"
+cookie_domain = "example.com"
+upstream = "http://127.0.0.1:9000"
+
+[[sites]]
+host = "notes.example.com"
+cookie_domain = "example.com"
+upstream = "http://127.0.0.1:9100"
+```
+
+Every gated hostname goes to the gate's one port. The gate tells the sites apart by `Host`, answers `/.tailisman/` itself, and runs the same check `forward_auth` would on everything else, using the request's own method and path, never `X-Forwarded-*` headers a client could set. An allowed request goes to the upstream. A page navigation without a session gets 302 to the sign-in page, anything else 401 with the same JSON body as `verify`.
+
+What the proxy handles, each checked by `e2e/gate_proxy_e2e.py` against a real app:
+
+- Request and response bodies stream through without being held in memory. Uploads of any size (Content-Length or chunked) reach the app as they arrive, with no limit from the gate. Answers of unknown length, chunked answers and server-sent events reach the browser as the app sends them, and Range requests get the app's 206 and `Content-Range`.
+- Long polls wait as long as the app takes. The connect timeout is 10 seconds, and there is no read timeout once connected.
+- Websockets. An allowed `Upgrade: websocket` request goes on to the app, and after its 101 the gate copies bytes both ways until either side closes. An anonymous upgrade gets 401.
+- HTTP/1.1 keep-alive towards the tunnel, HEAD, 204 and 304.
+- When the app is down, 502 with a short text body. The gate logs that once, and once more when the app answers again.
+
+Headers sent on to the app: hop-by-hop headers are dropped (`Connection` and the names it lists, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade` except on a websocket upgrade). The gate's own cookies, `tailisman_gate` and `tailisman_csrf`, are removed from `Cookie`, so the app never sees the session. Any client-sent `X-Tailisman-Session` and `X-Tailisman-User` are removed, then set from the session: the method, and for a guest their name. `Host` stays as the browser sent it. `X-Forwarded-For` gets the peer appended, `X-Forwarded-Proto` keeps cloudflared's value and is `https` when there is none, and `X-Forwarded-Host` is the `Host`.
+
+Headers sent back: hop-by-hop headers are dropped and the rest pass through, each `Set-Cookie` on its own line. The same cache rule as the Caddy snippet applies: an answer with no `Cache-Control` gets `Cache-Control: private`, and `public` in one the app sent becomes `private`. A tunnel's own HTTP cache is Cloudflare's edge cache, which honours `private`, so this keeps gated answers out of it. Purge the zone's cache for a host when you first gate it, because the edge may still hold copies from before.
+
+Open rules work as they do behind Caddy, and the gate refuses to match them against the same suspicious paths.
 
 ## Caddy
 
@@ -96,15 +140,16 @@ What Caddy 2.11.7 does here was measured with `e2e/gate_e2e.py`, not assumed. `f
 | `[[sites]] host` | The host the browser uses. A port is allowed for a site on a nonstandard HTTPS port. |
 | `[[sites]] cookie_domain` | Optional. The cookie's `Domain`, which must be the host or a parent of it. One sign-in then covers every host under it. Without it the cookie is host-only. |
 | `[[sites]] tailisman_key` | Optional. This origin's key from `tailisman key --aud https://<host>`. Needs `issuer`. Without it the site has only the password path. |
+| `[[sites]] upstream` | Optional. Makes the site a proxy site: `http://HOST:PORT` of the app, with no path, query or user name, and plain HTTP only. Without it the site is a `forward_auth` site behind Caddy. |
 | `[[sites]] open` | Optional. Requests the gate lets through without a session: `"/healthz"` exact, `"/api/*"` everything under `/api/`, `"POST /report"` one method only. The app behind must guard these itself. |
 
 `issuer_address_space` is a test knob. It is `"local"` by default, which is where Chrome places tailnet addresses. The local browser check sets it to `"loopback"`, because there the page and the stand-in issuer are both on 127.0.0.1, and Chrome fails a fetch whose declared address space does not match.
 
-The `sites` table is the only list of gated hosts. The verify check, the sign-in pages and `gate status` all read it, and a request for any other host is refused.
+The `sites` table is the only list of gated hosts. The verify check, the proxy, the sign-in pages and `gate status` all read it, and a request for any other host is refused.
 
 ## Routes
 
-All routes live under `/.tailisman/` on each gated host.
+All routes live under `/.tailisman/` on each gated host. On a proxy site every other path is checked and proxied to the upstream. On a `forward_auth` site every other path reaching the gate gets 404.
 
 | Route | What it does |
 | --- | --- |
@@ -228,6 +273,7 @@ The gate only reads files, so `ProtectSystem=strict` costs it nothing. Run `tail
 ```sh
 uv run --with pytest pytest                                     # includes tests/test_gate.py
 uv run python e2e/gate_e2e.py                                   # a real Caddy, the gate, an upstream, the issuer behind the serve stand-in
+uv run python e2e/gate_proxy_e2e.py                             # proxy mode with no Caddy: streaming, uploads, Range, websockets, guests, a dead app
 uv run --with playwright python e2e/gate_browser_check.py      # the same stack with Caddy's own TLS, in Playwright Chromium
 ```
 

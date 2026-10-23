@@ -1,6 +1,6 @@
 # tailisman gate config. Parsed once at startup; any error stops the gate from starting. Keep it mode 0600.
 
-listen = "127.0.0.1:8471"                     # loopback only; Caddy's forward_auth and reverse_proxy point here
+listen = "127.0.0.1:8471"                     # loopback only; a tunnel's ingress, or Caddy's forward_auth and reverse_proxy, point here
 session_secret_file = "gate-secret"           # 32 bytes from `tailisman keygen`; relative paths resolve against this file's directory
 password_file = "gate-password"               # one scrypt hash line, written by `tailisman passwd`; missing means the password path is off
 guest_file = "guest-passwords"                # optional, this is the default; guest records written by `tailisman passwd --add NAME --sites ...`
@@ -21,3 +21,8 @@ open = ["/healthz", "/api/*", "POST /report"] # optional; requests that pass wit
 [[sites]]
 host = "notes.example.com"
 cookie_domain = "example.com"
+
+[[sites]]
+host = "files.example.com"
+cookie_domain = "example.com"
+upstream = "http://127.0.0.1:9100"            # optional; the gate proxies this site to the app itself (for a Cloudflare Tunnel, no Caddy)

@@ -8,6 +8,7 @@ import time
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .. import Verifier
 from .._token import TailismanError, normalise_origin
@@ -34,12 +35,24 @@ class OpenRule:
 
 
 @dataclasses.dataclass(frozen=True)
+class Upstream:
+    """The app a proxy site forwards to: plain HTTP on a host and port, because the gate is the hop that sees the browser."""
+
+    host: str
+    port: int
+
+    def __str__(self) -> str:
+        return f"http://{f'[{self.host}]' if ':' in self.host else self.host}:{self.port}"
+
+
+@dataclasses.dataclass(frozen=True)
 class Site:
     host: str
     origin: str
     cookie_domain: str | None
     verifier: Verifier | None
     open: tuple[OpenRule, ...]
+    upstream: Upstream | None = None
 
     @property
     def scope(self) -> str:
@@ -69,7 +82,7 @@ class GateConfig:
 
 _TOP_KEYS = {"listen", "session_secret_file", "password_file", "guest_file", "session_days", "issuer", "issuer_address_space", "rate_limit", "sites"}
 _RATE_KEYS = {"per_ip", "global", "window_seconds"}
-_SITE_KEYS = {"host", "cookie_domain", "tailisman_key", "open"}
+_SITE_KEYS = {"host", "cookie_domain", "tailisman_key", "open", "upstream"}
 _HOST = re.compile(r"([a-z0-9-]+(?:\.[a-z0-9-]+)+|localhost)\.?(?::([0-9]{1,5}))?", re.ASCII | re.IGNORECASE)
 _OPEN = re.compile(r"(?:([A-Z]+) )?(/[^\s*?#]*)(\*)?")
 
@@ -109,7 +122,7 @@ def parse_config(raw: dict, base: Path = Path("."), clock: Callable[[], float] =
         raise ConfigError(f"session_secret_file {secret_path} must hold exactly 32 bytes; create it with `tailisman keygen`")
     listen = parse_listen(raw.get("listen", "127.0.0.1:8471"))
     if isinstance(listen, UnixListen):
-        raise ConfigError("the gate listens on loopback TCP only, because Caddy's forward_auth and reverse_proxy both point at it")
+        raise ConfigError("the gate listens on loopback TCP only, because a tunnel's ingress or Caddy's forward_auth points at it over TCP")
     days = raw.get("session_days", 30)
     if type(days) is not int or not 1 <= days <= MAX_COOKIE_DAYS:
         raise ConfigError(f"session_days must be an integer from 1 to {MAX_COOKIE_DAYS} (browsers cap cookies at {MAX_COOKIE_DAYS} days)")
@@ -191,7 +204,28 @@ def _site(entry: object, issuer: str | None, clock: Callable[[], float]) -> Site
     rules = entry.get("open", [])
     if not isinstance(rules, list):
         raise ConfigError(f"site {host} open must be a list of rules")
-    return Site(host, normalise_origin("https://" + host), cookie_domain, verifier, tuple(parse_open_rule(r) for r in rules))
+    upstream = parse_upstream(entry["upstream"], host) if "upstream" in entry else None
+    return Site(host, normalise_origin("https://" + host), cookie_domain, verifier, tuple(parse_open_rule(r) for r in rules), upstream)
+
+
+def parse_upstream(text: object, host: str) -> Upstream:
+    message = f"site {host} upstream {text!r} must be http://HOST:PORT with nothing else, such as http://127.0.0.1:9000"
+    if not isinstance(text, str):
+        raise ConfigError(message)
+    try:
+        url = urlsplit(text.strip())
+        port = url.port
+    except ValueError as exc:
+        raise ConfigError(message) from exc
+    if url.scheme == "https":
+        raise ConfigError(message + "; the gate speaks plain HTTP to the app, so put the app on a loopback port")
+    if url.username is not None or url.password is not None:
+        raise ConfigError(message + "; a user name or password is not allowed")
+    if url.path not in ("", "/") or url.query or url.fragment or "?" in text or "#" in text:
+        raise ConfigError(message + "; a path, query or fragment is not allowed, the browser's own path is forwarded as is")
+    if url.scheme != "http" or not url.hostname or port is None:
+        raise ConfigError(message)
+    return Upstream(url.hostname, port)
 
 
 def _rate_limits(table: object) -> RateLimits:

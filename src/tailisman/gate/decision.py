@@ -1,4 +1,4 @@
-"""Whether a request Caddy's forward_auth asks about may reach the site. One pure function, decide(), owns the answer.
+"""Whether a request may reach the site, asked by Caddy's forward_auth or by the gate's own proxy. One pure function, decide(), owns the answer.
 
 Measured on Caddy 2.11.7: forward_auth sends the original Host, X-Forwarded-Method and the raw X-Forwarded-Uri (path and
 query exactly as the client sent them, `/api/../secret` included), appends the original query to the verify URI, and
@@ -32,14 +32,17 @@ class GateRequest:
 
     @classmethod
     def from_forward_auth(cls, headers: Message) -> GateRequest:
-        hosts = headers.get_all("Host") or []
-        return cls(
-            host=site_key(hosts[0]) if len(hosts) == 1 else None,
-            method=(headers.get("X-Forwarded-Method") or "").upper(),
-            uri=headers.get("X-Forwarded-Uri") or "",
-            cookies=cookie_values(headers.get("Cookie"), COOKIE),
-            accepts_html="text/html" in (headers.get("Accept") or ""),
-        )
+        """Caddy's question about another request: the method and URI come from the X-Forwarded-* headers Caddy sets."""
+        return cls._of(headers, (headers.get("X-Forwarded-Method") or "").upper(), headers.get("X-Forwarded-Uri") or "")
+
+    @classmethod
+    def from_request(cls, method: str, target: str, headers: Message) -> GateRequest:
+        """A request the gate proxies itself. Its own request line counts; X-Forwarded-* from the client never does."""
+        return cls._of(headers, method.upper(), target)
+
+    @classmethod
+    def _of(cls, headers: Message, method: str, uri: str) -> GateRequest:
+        return cls(request_host(headers), method, uri, cookie_values(headers.get("Cookie"), COOKIE), "text/html" in (headers.get("Accept") or ""))
 
     @property
     def path(self) -> str:
@@ -62,6 +65,12 @@ class Unauthorised:
 
 
 Decision = Allow | SignIn | Unauthorised
+
+
+def request_host(headers: Message) -> str | None:
+    """The site key of the one Host header, or None when there is not exactly one."""
+    hosts = headers.get_all("Host") or []
+    return site_key(hosts[0]) if len(hosts) == 1 else None
 
 
 def decide(request: GateRequest, config: GateConfig, check_session: SessionCheck, now: int) -> Decision:

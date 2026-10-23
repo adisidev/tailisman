@@ -52,7 +52,7 @@ The `audiences` table, keyed by normalised origin, is the CORS allowlist, the `r
 
 ## The gate
 
-The gate is a consumer like any other, built for sites that should not change. It holds one verifier per gated origin and turns a claim into its own cookie, and it adds a backup password for browsers the issuer cannot reach. It sits behind Caddy's `forward_auth` because every proxy it has to front is Caddy. Its cookie needs no server state: the MAC key mixes the password hash into the session secret, so changing the password is the one way to end every session. `docs/GATE.md` covers the rest.
+The gate is a consumer like any other, built for sites that should not change. It holds one verifier per gated origin and turns a claim into its own cookie, and it adds a backup password for browsers the issuer cannot reach. Behind Caddy it answers `forward_auth`. Behind a Cloudflare Tunnel, which terminates TLS but cannot ask anyone before it hands a request on, it is the reverse proxy itself, so a site that publishes through a tunnel needs no Caddy. Both modes build the same request shape and ask the same `decide()`, so they cannot disagree about who gets in. Its cookie needs no server state: the owner's MAC key mixes the password hash into the session secret, so changing the password ends every owner session, and each guest's key mixes in that guest's digest, so revoking one guest ends only theirs. A guest cookie can share a parent domain with the owner's, so the gate checks the guest's site list on every request rather than trusting the cookie's scope. `docs/GATE.md` covers the rest.
 
 ## What it does not do
 

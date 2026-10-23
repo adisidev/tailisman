@@ -1,4 +1,4 @@
-"""The gate's HTTP surface: forward_auth's verify target and the /.tailisman/ pages on every gated host."""
+"""The gate's HTTP surface: the /.tailisman/ pages and forward_auth's verify target on every gated host, and proxy mode for sites with an upstream."""
 
 from __future__ import annotations
 
@@ -22,15 +22,13 @@ from .. import MAX_BODY, TailismanError, extract_token
 from .._token import normalise_origin
 from ..issuer.config import ConfigError
 from ..issuer.http import Response
-from .config import GateConfig, Site, host_without_port, site_key
-from .decision import LOGIN_PATH, Allow, GateRequest, SignIn, decide, safe_next
+from .config import GateConfig, Site, host_without_port
+from .decision import LOGIN_PATH, Allow, Decision, GateRequest, SignIn, Unauthorised, decide, request_host, safe_next
 from .credentials import Credentials
 from .ratelimit import RateLimiter
-from .session import COOKIE, Method, Session, cookie_values, mint
+from .proxy import relay, session_headers
+from .session import COOKIE, CSRF_COOKIE, Method, Session, cookie_values, mint
 
-CSRF_COOKIE = "tailisman_csrf"
-SESSION_HEADER = "X-Tailisman-Session"
-USER_HEADER = "X-Tailisman-User"
 STATIC = Path(__file__).with_name("static")
 _CSRF = re.compile(r"[A-Za-z0-9_-]{32}")
 Headers = tuple[tuple[str, str], ...]
@@ -70,6 +68,8 @@ class GateApp:
         self.credentials = Credentials(config.session_secret, config.password_file, config.guest_file)
         self.limiter = RateLimiter(config.rate_limit)
         self._password_lock = threading.Lock()
+        self._down_lock = threading.Lock()
+        self._down: set[str] = set()
         try:
             self.static = {
                 "/.tailisman/tailisman.js": ("text/javascript; charset=utf-8", _snippet_path().read_bytes()),
@@ -101,8 +101,7 @@ class GateApp:
             return _text(404, "not found\n"), None
         if method not in methods:
             return _text(405, "method not allowed\n"), None
-        hosts = headers.get_all("Host") or []
-        site = self.config.sites.get(site_key(hosts[0]) or "") if len(hosts) == 1 else None
+        site = self.config.sites.get(request_host(headers) or "")
         if site is None:
             return _text(404, "this gate does not cover this host\n"), None
         return methods[method](request, site)
@@ -110,13 +109,32 @@ class GateApp:
     def now(self) -> int:
         return int(self.clock())
 
+    def check(self, request: GateRequest) -> Decision:
+        return decide(request, self.config, self.credentials.session_for, self.now())
+
+    def proxy_site(self, target: str, headers: Message) -> Site | None:
+        """The proxy site a request goes on to, or None when the gate answers it: its pages under /.tailisman/, forward_auth sites, unknown hosts."""
+        if target.startswith("/.tailisman/"):
+            return None
+        site = self.config.sites.get(request_host(headers) or "")
+        return site if site is not None and site.upstream is not None else None
+
+    def note_upstream(self, site: Site, error: str | None) -> str | None:
+        """A log line when a site's app stops or starts answering, so a dead app is logged once rather than per request."""
+        with self._down_lock:
+            if error is not None and site.host not in self._down:
+                self._down.add(site.host)
+                return f"{site.host}: upstream {site.upstream} is not answering ({error}); answering 502"
+            if error is None and site.host in self._down:
+                self._down.discard(site.host)
+                return f"{site.host}: upstream {site.upstream} answers again"
+        return None
+
     def _verify(self, headers: Message) -> Response:
-        decision = decide(GateRequest.from_forward_auth(headers), self.config, self.credentials.session_for, self.now())
+        decision = self.check(GateRequest.from_forward_auth(headers))
         if isinstance(decision, Allow):
             return Response(200, (("Cache-Control", "no-store"),) + session_headers(decision.session), b"")
-        if isinstance(decision, SignIn):
-            return Response(302, (("Location", decision.login_url), ("Cache-Control", "no-store")), b"")
-        return _json(401, {"error": decision.reason})
+        return refusal(decision)
 
     def _current_session(self, request: Incoming, site: Site) -> Session | None:
         return self.credentials.session_for(cookie_values(request.headers.get("Cookie"), COOKIE), site.host, self.now())
@@ -255,11 +273,11 @@ class GateApp:
         return ("Set-Cookie", f"{COOKIE}={value}; Max-Age={self.config.session_days * 86400}; Path=/{domain}; Secure; HttpOnly; SameSite=Lax")
 
 
-def session_headers(session: Session | None) -> Headers:
-    """What the app behind is told about the visitor. The proxy strips client-sent copies; Caddy's copy_headers does the same."""
-    if session is None:
-        return ()
-    return ((SESSION_HEADER, session.method.value),) + (((USER_HEADER, session.guest),) if session.guest else ())
+def refusal(decision: SignIn | Unauthorised) -> Response:
+    """The same answer for forward_auth and proxy mode: a page navigation goes to sign in, anything else gets 401."""
+    if isinstance(decision, SignIn):
+        return Response(302, (("Location", decision.login_url), ("Cache-Control", "no-store")), b"")
+    return _json(401, {"error": decision.reason})
 
 
 def _csrf_from(request: Incoming) -> str | None:
@@ -317,29 +335,69 @@ def _page(status: int, title: str, main: str, csp: str, extra: Headers = ()) -> 
     return Response(status, headers + extra, document.encode())
 
 
+def _log(line: str | None) -> None:
+    if line:
+        print(f"tailisman gate: {line}", file=sys.stderr)
+
+
 def handler_for(app: GateApp) -> type[http.server.BaseHTTPRequestHandler]:
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "tailisman-gate"
         sys_version = ""
+        protocol_version = "HTTP/1.1"
 
         def _dispatch(self) -> None:
-            length = int(self.headers.get("Content-Length") or 0)
-            if not 0 <= length <= MAX_BODY:
+            site = app.proxy_site(self.path, self.headers)
+            if site is None:
+                self._answer_here()
+            else:
+                self._proxy(site)
+
+        def _answer_here(self) -> None:
+            if "Transfer-Encoding" in self.headers:
+                self.send_error(411)
+                return
+            length = self.headers.get("Content-Length") or "0"
+            if not length.isdigit() or int(length) > MAX_BODY:
                 self.send_error(413)
                 return
-            body = self.rfile.read(length)
+            body = self.rfile.read(int(length))
             response, log = app.respond(self.command, self.path, self.headers, body, self.client_address[0])
+            self._send(response)
+            _log(log)
+
+        def _proxy(self, site: Site) -> None:
+            decision = app.check(GateRequest.from_request(self.command, self.path, self.headers))
+            if isinstance(decision, Allow):
+                _log(app.note_upstream(site, relay(self, site.upstream, session_headers(decision.session))))
+                return
+            self._skip_small_body()
+            self._send(refusal(decision))
+
+        def _skip_small_body(self) -> None:
+            """A refused request's body is read and dropped up to the gate's own form limit, so the connection stays usable; a bigger one closes it unread."""
+            length = self.headers.get("Content-Length") or "0"
+            if "Transfer-Encoding" in self.headers or not length.isdigit() or int(length) > MAX_BODY:
+                self.close_connection = True
+            else:
+                self.rfile.read(int(length))
+
+        def _send(self, response: Response) -> None:
             self.send_response(response.status)
             for name, value in response.headers:
                 self.send_header(name, value)
             self.send_header("Content-Length", str(len(response.body)))
+            if self.close_connection:
+                self.send_header("Connection", "close")
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(response.body)
-            if log:
-                print(f"tailisman gate: {log}", file=sys.stderr)
 
-        do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _dispatch
+        def __getattr__(self, name: str):
+            """Every method reaches _dispatch, so a proxied app can use WebDAV's or any other; the gate's own routes still list theirs."""
+            if name.startswith("do_"):
+                return self._dispatch
+            raise AttributeError(name)
 
         def log_message(self, format: str, *args) -> None:
             pass

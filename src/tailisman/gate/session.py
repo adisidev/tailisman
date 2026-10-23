@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterable
 from .._token import _b64decode, b64encode
 
 COOKIE = "tailisman_gate"
+CSRF_COOKIE = "tailisman_csrf"
 PREFIX = "tsg1"
 GUEST_PREFIX = "tsg1g"
 GUEST_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}", re.ASCII)
