@@ -47,8 +47,12 @@ Find the Caddyfile from `ps aux | grep '[c]addy'` (the `--config` argument), or 
 
 ```sh
 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address <admin address>   # only when the global options set `admin` to something other than localhost:2019
 ```
+
+A reload also saves the running config to `~/.config/caddy/autosave.json` (or `$XDG_CONFIG_HOME/caddy`) unless the global options say `persist_config off`. That file is used only by `caddy run --resume`.
+
+A site block may have no hostname, such as `:9300 { ... }` or `http://:9300`, when a tunnel or another proxy in front sends every hostname to one port. The snippet works the same there: `import tailisman_gate` goes first in that block. The gate still picks the site by the `Host` header the browser sent, so the gate's `[[sites]] host` is the public hostname, not the port.
 
 `forward_auth` mode leaves the app behind Caddy and asks the gate about each request. Leave `upstream` out of the gate's site. This snippet is the one in `docs/GATE.md`, measured on Caddy 2.11.7.
 

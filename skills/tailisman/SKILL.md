@@ -38,7 +38,8 @@ On macOS the `tailscale` CLI may not be on `PATH`. Use `/Applications/Tailscale.
 | --- | --- |
 | Cloudflare Tunnel, config file (`cloudflared ... --config` or `~/.cloudflared/config.yml`) | Proxy mode. Point each hostname's `service` at the gate and give the site an `upstream`. This is the simplest setup. |
 | Cloudflare Tunnel, remotely managed (`cloudflared tunnel run --token ...`) | Proxy mode. Change the hostname's service through the API or dashboard. |
-| Caddy | `forward_auth` snippet, or proxy mode with `reverse_proxy` to the gate. Both tested. |
+| Cloudflare quick tunnel (`cloudflared tunnel --url http://...`, a `*.trycloudflare.com` name) | Do not restart it: a new run gets a new hostname. If it points at a local proxy (Caddy, nginx), gate in that proxy. If it points straight at the app, tell the user a quick tunnel cannot be repointed in place, and offer a named tunnel or a restart with a new URL pointing at the gate. |
+| Caddy (also when a tunnel points at Caddy) | `forward_auth` snippet, or proxy mode with `reverse_proxy` to the gate. Both tested. |
 | nginx | Proxy mode with `proxy_pass` to the gate (recommended). An `auth_request` config exists in the reference but is untested. |
 | `tailscale serve` only, no Funnel | The pages are already reachable only on the tailnet. Tell the user so. Gate them only if they want a password for tailnet guests. |
 | `tailscale funnel` | Public. Proxy mode behind the Funnel handler is possible but untested. Prefer moving the site to a tunnel or Caddy. |
@@ -77,7 +78,7 @@ uv tool install git+https://github.com/adisidev/tailisman
 pipx install git+https://github.com/adisidev/tailisman
 ```
 
-Pick two free loopback ports, one for the public listener (default 8471) and one for the tailnet listener (default 8470), and one free tailnet HTTPS port for serve (default 8443). An empty answer means the port is free.
+Pick two free loopback ports, one for the public listener (default 8471) and one for the tailnet listener (default 8470), and one free tailnet HTTPS port for serve (default 8443). An empty answer means the port is free. When a default is taken, use another port everywhere it appears below: `listen`, `[tailnet] listen`, `[tailnet] port` (which must equal the `--https=` port you give serve), the front door's target and `--base-url-for`.
 
 ```sh
 lsof -nP -iTCP:8471 -sTCP:LISTEN; lsof -nP -iTCP:8470 -sTCP:LISTEN   # Linux: ss -ltn 'sport = :8471'
@@ -133,7 +134,7 @@ sudo systemctl enable --now tailisman-gate                                      
 
 The gate reads `gate.toml` only at startup. Restart it after every edit to that file (`launchctl kickstart -k gui/$(id -u)/com.example.tailisman-gate` or `sudo systemctl restart tailisman-gate`). Password and guest changes need no restart.
 
-**Check.** Do this before any traffic goes through the gate. Point `gate status` at the loopback listener with one `--base-url-for HOST=http://127.0.0.1:8471` per site. The `tailnet:` line must say `ok, served, Funnel off`, and every proxy-mode site line must end in `ok`. A `forward_auth` site answers 404 here until Caddy or nginx sits in front, so its line passes only after step 6.
+**Check.** Do this before any traffic goes through the gate. Point `gate status` at the loopback listener with one `--base-url-for HOST=http://127.0.0.1:8471` per site. The `tailnet:` line must say `ok, served, Funnel off`, and every proxy-mode site line must end in `ok`. A `forward_auth` site answers 404 here until Caddy or nginx sits in front, so `gate status` exits 1 with only `forward_auth` lines failing: that is the expected state at this step, and those lines must pass after step 6.
 
 ```sh
 tailisman gate status --config ~/.config/tailisman/gate.toml --base-url-for tools.example.com=http://127.0.0.1:8471
@@ -161,7 +162,7 @@ rg -l --hidden -e 'tools\.example\.com' ~ /etc 2>/dev/null | grep -v -e '/\.git/
 crontab -l; ls ~/Library/LaunchAgents /etc/systemd/system 2>/dev/null; systemctl list-timers 2>/dev/null
 ```
 
-Then read the app's access log (or the front door's) for the last few days and list user agents that are not browsers, such as `curl`, `python-requests`, `Go-http-client`, `okhttp`, `node`, or an app name with `CFNetwork`. Ask the user about any caller you cannot place.
+Then, if the app or the front door keeps an access log, read the last few days and list user agents that are not browsers, such as `curl`, `python-requests`, `Go-http-client`, `okhttp`, `node`, or an app name with `CFNetwork`. Without a log, the file search above is all you have; say so in the report, and ask the user about any caller you cannot place.
 
 For each caller, choose in this order.
 
@@ -191,7 +192,7 @@ Change each front door as [references/front-doors.md](references/front-doors.md)
 
 ## 7. Purge the Cloudflare cache
 
-Skip this when no Cloudflare proxy sits in front of the host. Cloudflare caches `.js`, `.css`, images, and PDFs at its edge even when the app sent no `Cache-Control`, and serves those copies to anyone without asking the origin. The gate marks its answers `private` from now on, but copies cached before you gated the host stay at the edge until you purge them. [references/cloudflare.md](references/cloudflare.md#purge-the-cache) has the API call and the dashboard path.
+Skip this when no Cloudflare proxy sits in front of the host. A quick tunnel's `*.trycloudflare.com` name is in Cloudflare's own zone, so there is nothing you can purge; run the check below, and if it shows `HIT`, the only fixes are waiting out the asset's `max-age` or moving to a named tunnel on the user's own domain. Cloudflare caches `.js`, `.css`, images, and PDFs at its edge even when the app sent no `Cache-Control`, and serves those copies to anyone without asking the origin. The gate marks its answers `private` from now on, but copies cached before you gated the host stay at the edge until you purge them. [references/cloudflare.md](references/cloudflare.md#purge-the-cache) has the API call and the dashboard path.
 
 **Check.** Fetch a real asset path from the site anonymously. It must answer 401 or 302, and `cf-cache-status` must not be `HIT`.
 
