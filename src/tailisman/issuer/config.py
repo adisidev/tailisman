@@ -88,13 +88,13 @@ def parse_config(raw: dict, base: Path = Path(".")) -> IssuerConfig:
     ttl = raw.get("ttl_seconds", 60)
     if type(ttl) is not int or not 10 <= ttl <= 300:
         raise ConfigError("ttl_seconds must be an integer from 10 to 300")
-    default_devices = _string_list(raw.get("devices", []), "devices")
+    default_devices = string_list(raw.get("devices", []), "devices")
     audiences: dict[str, Audience] = {}
     entries = raw.get("audiences", [])
     if not isinstance(entries, list) or not entries:
         raise ConfigError("at least one [[audiences]] table is required")
     for entry in entries:
-        audience = _audience(entry, default_devices)
+        audience = parse_audience(entry, default_devices)
         if audience.origin in audiences:
             raise ConfigError(f"audience {audience.origin} is configured twice")
         audiences[audience.origin] = audience
@@ -145,7 +145,7 @@ def resolve_tailscale_bin(setting: str) -> str:
     return found
 
 
-def _audience(entry: object, default_devices: frozenset[str]) -> Audience:
+def parse_audience(entry: object, default_devices: frozenset[str]) -> Audience:
     if not isinstance(entry, dict):
         raise ConfigError("each [[audiences]] entry must be a table")
     _no_unknown_keys(entry, _AUDIENCE_KEYS, "[[audiences]]")
@@ -154,10 +154,10 @@ def _audience(entry: object, default_devices: frozenset[str]) -> Audience:
         origin = normalise_origin(text)
     except ValueError as exc:
         raise ConfigError(f"audience origin {text!r} must be scheme://host[:port] with no path") from exc
-    devices = _string_list(entry["devices"], f"{origin} devices") if "devices" in entry else default_devices
+    devices = string_list(entry["devices"], f"{origin} devices") if "devices" in entry else default_devices
     if not devices:
         raise ConfigError(f"audience {origin} has no devices; set devices at the top level or on the audience")
-    users = _string_list(entry["users"], f"{origin} users") if "users" in entry else None
+    users = string_list(entry["users"], f"{origin} users") if "users" in entry else None
     if users is not None and not users:
         raise ConfigError(f"audience {origin} users is empty; leave it out to accept any user of an allowed device")
     refuse_automation = entry.get("refuse_automation", False)
@@ -173,7 +173,7 @@ def _required(table: dict, key: str, kind: type):
     return value
 
 
-def _string_list(value: object, name: str) -> frozenset[str]:
+def string_list(value: object, name: str) -> frozenset[str]:
     if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
         raise ConfigError(f"{name} must be a list of non-empty strings")
     return frozenset(value)

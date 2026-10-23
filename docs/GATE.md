@@ -1,8 +1,8 @@
 # tailisman gate
 
-The gate puts one sign-in in front of any number of sites, with no change to the apps behind them. A browser on one of your allowlisted tailnet devices is let in through the existing tailisman issuer, usually without a click. Every other browser gets a password form, so a borrowed laptop, a phone off the tailnet or a Chrome that has not yet been granted Local Network Access can still get in with the backup password.
+The gate puts one sign-in in front of any number of sites, with no change to the apps behind them. A browser on one of your allowlisted tailnet devices is let in through the gate's own tailnet listener, usually without a click. Every other browser gets a password form, so a borrowed laptop, a phone off the tailnet or a Chrome that has not yet been granted Local Network Access can still get in with the backup password.
 
-The gate is a small standard-library Python server on loopback, and each site uses it in one of two ways. In proxy mode, for pages published through a Cloudflare Tunnel, the tunnel sends the site's traffic to the gate and the gate forwards each allowed request to the app. In `forward_auth` mode, for sites served by Caddy, Caddy asks the gate about every request and proxies the gate's own pages under `/.tailisman/` to it. One gate serves both kinds of site at once, and both ask the same decision function.
+The gate is one small standard-library Python process with two loopback listeners. The public listener serves the sites. The tailnet listener sits behind `tailscale serve` and tells allowlisted devices apart. Each site uses the public listener in one of two ways. In proxy mode, for pages published through a Cloudflare Tunnel, the tunnel sends the site's traffic to the gate and the gate forwards each allowed request to the app. In `forward_auth` mode, for sites served by Caddy, Caddy asks the gate about every request and proxies the gate's own pages under `/.tailisman/` to it. One gate serves both kinds of site at once, and both ask the same decision function.
 
 ## Request flow
 
@@ -16,12 +16,33 @@ The gate is a small standard-library Python server on loopback, and each site us
                                                                            anything else?    401 {"error": ...}
  <-- 302 /.tailisman/login  <--  passes a non-2xx answer through as is
  GET /.tailisman/login      -->  reverse_proxy /.tailisman/*           -->  sign-in page
-   login.js: claim() from the issuer, POST the token to /.tailisman/exchange   Set-Cookie: tailisman_gate (method tailnet)
+   login.js: claim() from the tailnet listener, POST the code to /.tailisman/exchange   Set-Cookie: tailisman_gate (method tailnet)
    or the password form: POST /.tailisman/login                                Set-Cookie: tailisman_gate (method password)
  GET /notes with the cookie -->  forward_auth: 200                    -->  reverse_proxy to the app
 ```
 
-The sign-in page tries the tailnet path first. It loads `/.tailisman/login.js`, which imports the browser snippet from `/.tailisman/tailisman.js` and asks the issuer for a token without any visible step. When that works, the page says "Recognised laptop, signing you in" and goes to the page the visitor asked for. When the issuer cannot be reached (off the tailnet, or Local Network Access not granted yet), the page shows a "Sign in from this device" button, which takes the navigation path through the issuer and comes back to `/.tailisman/exchange`. The password form is always there and works without JavaScript.
+The sign-in page tries the tailnet path first. It loads `/.tailisman/login.js`, which imports the browser snippet from `/.tailisman/tailisman.js` and asks the gate's tailnet listener, at `https://<serve_host>:8443`, for a code without any visible step. When that works, the page says "Recognised laptop, signing you in" and goes to the page the visitor asked for. When the tailnet listener cannot be reached (off the tailnet, or Local Network Access not granted yet), the page shows a "Sign in from this device" button, which takes the navigation path through the tailnet listener and comes back to `/.tailisman/exchange`. The password form is always there and works without JavaScript.
+
+## The tailnet listener
+
+The tailnet listener runs the same device checks as the standalone issuer, with the same code: the request must name this machine's serve name in `Host` and `X-Forwarded-Host`, come through serve, not come through Funnel, come from a gated site's origin, and come from a peer `tailscale whois` knows, that is not tagged, whose login matches serve's header, whose device is on the allowlist, and whose user and automation policy pass. It answers with the same CORS headers and the same navigation fallback as the issuer's `/v1/claim` and `/v1/start`, so the browser snippet is unchanged. What it hands back is not a signed token. It is a one-time code, 32 random bytes, held only in the gate's memory, bound to the site's origin, carrying the device's name, stable ID and login, and valid for 60 seconds. `/.tailisman/exchange` on the public listener redeems it once. A code that is unknown, expired, already used or shown to another site is refused with 403 and `malformed`, `expired`, `replayed` or `wrong_audience`, and a code shown to the wrong site is burned.
+
+Because both listeners are one process, nothing is signed and there is no key to hand out or rotate. Run the gate on the machine that serves the sites. An issuer on another machine would make the device path depend on that machine being awake, while here, if the page loads, the device path works. A restart forgets codes that were in flight, which costs at most a second click.
+
+`[tailnet]` in `gate.toml`:
+
+```toml
+[tailnet]
+listen = "127.0.0.1:8470"
+serve_host = "gate.example-tailnet.ts.net"
+devices = ["nEXAMPLE1CNTRL", "laptop"]
+```
+
+```sh
+tailscale serve --bg --https=8443 http://127.0.0.1:8470   # never tailscale funnel
+```
+
+Every site is a tailnet audience unless it sets `tailnet = false`. `gate status` checks that the tailnet listener answers, that `tailscale serve` fronts it under `serve_host`, and that Funnel is off for it, as `tailisman check` does for the standalone issuer. The device check refuses Funnel traffic on every request as well.
 
 ## Quickstart
 
@@ -30,7 +51,7 @@ On the machine that runs Caddy, with tailisman installed as in the README:
 ```sh
 mkdir -p ~/.config/tailisman
 tailisman keygen ~/.config/tailisman/gate-secret
-cp gate.example.toml ~/.config/tailisman/gate.toml         # from a checkout; edit sites and issuer
+cp gate.example.toml ~/.config/tailisman/gate.toml         # from a checkout; edit sites and [tailnet]
 chmod 600 ~/.config/tailisman/gate.toml
 tailisman passwd --config ~/.config/tailisman/gate.toml --generate --out ~/.config/tailisman/gate-passphrase
 tailisman gate run --config ~/.config/tailisman/gate.toml
@@ -38,11 +59,13 @@ tailisman gate run --config ~/.config/tailisman/gate.toml
 
 `passwd --generate` writes a passphrase such as `bavu-tiko-relu-mazo-pine-dusa` to the `--out` file and its hash to the config's `password_file`, both mode 0600, and prints only the two paths. Read the passphrase from the file, store it in your password manager, and delete the file. Without `--generate`, `passwd` asks for a password twice (at least 12 characters).
 
-For the tailnet path, add each gated origin as an audience in the issuer's `issuer.toml`, then put the key it prints into that site's `tailisman_key`:
+For the tailnet path, fill in `[tailnet]` with this machine's MagicDNS name and the devices to allow, and put the tailnet listener behind serve:
 
 ```sh
-tailisman key --config ~/.config/tailisman/issuer.toml --aud https://tools.example.com
+tailscale serve --bg --https=8443 http://127.0.0.1:8470
 ```
+
+`gate run` starts both listeners. To find a device's stable ID, open `https://<serve_host>:8443/` from it, which shows what the gate sees for that device.
 
 Then either point the tunnel at the gate and give each site an `upstream` (proxy mode, below), or add the snippet to the Caddyfile and reload Caddy. Check every site from outside:
 
@@ -120,7 +143,7 @@ The `route` block keeps the order: the gate's own pages first, then the check fo
 
 To pass the sign-in method on to the app, add `copy_headers X-Tailisman-Session X-Tailisman-User` inside `forward_auth`. The app then sees `password`, `tailnet` or `guest` in `X-Tailisman-Session`, and for a guest their name in `X-Tailisman-User`. Measured on Caddy 2.11.7: a client that sends its own copy of either header has it replaced by the gate's value, and removed when the gate's answer does not carry it (an open rule, or `X-Tailisman-User` on an owner session).
 
-If the site's own `header` directive sets a `Content-Security-Policy`, scope it with `not path /.tailisman/*`. The gate sends its own policy on its pages, and a site-wide one that lacks the issuer in `connect-src` blocks the silent tailnet path.
+If the site's own `header` directive sets a `Content-Security-Policy`, scope it with `not path /.tailisman/*`. The gate sends its own policy on its pages, and a site-wide one that lacks the tailnet listener's origin in `connect-src` blocks the silent tailnet path.
 
 What Caddy 2.11.7 does here was measured with `e2e/gate_e2e.py`, not assumed. `forward_auth` sends the original `Host`, `X-Forwarded-Method` and `X-Forwarded-Uri` to the gate, and the URI is raw, so `/api/../secret` arrives as written. It also appends the original query string to the verify URI. A 302 or 401 from the gate reaches the browser unchanged, `Location` and body included, and a `Set-Cookie` from `/.tailisman/*` reaches the browser. Caddy matches its own `path` matchers against the cleaned path but proxies the raw one, so an upstream can receive `/api/../secret` and resolve it to `/secret` itself. That is why the gate refuses to match open rules against such paths.
 
@@ -153,16 +176,23 @@ The digest is unsalted SHA-256, so a short or guessable token can be guessed bac
 | `password_file` | One scrypt hash line written by `tailisman passwd`. When it is missing or malformed the owner's password path is off. That is not a startup error. The sign-in page shows the password form while the owner password or a guest for that site exists, and otherwise says password sign-in is not set up. |
 | `guest_file` | Optional, default `guest-passwords` next to the config. The guest records written by `tailisman passwd --add`. A missing file means no guests. |
 | `session_days` | How long a session lasts, 1 to 400. Default 30. |
-| `issuer` | The issuer's origin. Without it only the password path exists. |
+| `[tailnet]` | Optional. The tailnet listener. Without it only the password paths exist. |
+| `[tailnet] listen` | Loopback address and port, or `unix:/path`. Default `127.0.0.1:8470`. Must differ from `listen`. |
+| `[tailnet] serve_host` | This machine's MagicDNS name, which serve passes as `Host`. Required. |
+| `[tailnet] port`, `origin` | Where browsers reach the listener: `https://<serve_host>:<port>`, port 8443 by default. `origin` overrides the whole origin. |
+| `[tailnet] devices` | Stable IDs, short names or MagicDNS names of the devices that may sign in this way. Required. |
+| `[tailnet] users`, `refuse_automation` | Optional. The issuer's per-audience policy, applied to every tailnet site: only these logins, and refuse default automation. |
+| `[tailnet] ttl_seconds` | How long a code lives, 10 to 300. Default 60. |
+| `[tailnet] tailscale_bin` | `"auto"` (default) or the path of the tailscale CLI, used for `whois` and by `gate status` for `serve status`. |
 | `rate_limit` | `per_ip` (default 5), `global` (default 30), `window_seconds` (default 900). |
 | `[[sites]] host` | The host the browser uses. A port is allowed for a site on a nonstandard HTTPS port. |
 | `[[sites]] cookie_domain` | Optional. The cookie's `Domain`, which must be the host or a parent of it. One sign-in then covers every host under it. Without it the cookie is host-only. |
-| `[[sites]] tailisman_key` | Optional. This origin's key from `tailisman key --aud https://<host>`. Needs `issuer`. Without it the site has only the password path. |
+| `[[sites]] tailnet` | Optional, default `true`. `false` leaves the site with the password paths only. |
 | `[[sites]] upstream` | Optional. Makes the site a proxy site: `http://HOST:PORT` of the app, with no path, query or user name, and plain HTTP only. Without it the site is a `forward_auth` site behind Caddy. |
 | `[[sites]] bearers` | Optional. SHA-256 digests, `sha256$<base64>` from `tailisman gate bearer-hash`, of machine callers' bearer tokens that may pass without a session. |
 | `[[sites]] open` | Optional. Requests the gate lets through without a session: `"/healthz"` exact, `"/api/*"` everything under `/api/`, `"POST /report"` one method only. The app behind must guard these itself. |
 
-`issuer_address_space` is a test knob. It is `"local"` by default, which is where Chrome places tailnet addresses. The local browser check sets it to `"loopback"`, because there the page and the stand-in issuer are both on 127.0.0.1, and Chrome fails a fetch whose declared address space does not match.
+`[tailnet] address_space` is a test knob. It is `"local"` by default, which is where Chrome places tailnet addresses. The local browser check sets it to `"loopback"`, because there the page and the serve stand-in are both on 127.0.0.1, and Chrome fails a fetch whose declared address space does not match.
 
 The `sites` table is the only list of gated hosts. The verify check, the proxy, the sign-in pages and `gate status` all read it, and a request for any other host is refused.
 
@@ -175,7 +205,7 @@ All routes live under `/.tailisman/` on each gated host. On a proxy site every o
 | `GET /.tailisman/verify` | The `forward_auth` target. 200 with an empty body to allow, plus `X-Tailisman-Session` when there is a session or a listed bearer (`bearer`) and `X-Tailisman-User` for a guest. 302 to the sign-in page for a page navigation (`GET` or `HEAD` that accepts `text/html`), 401 with a small JSON body otherwise. |
 | `GET /.tailisman/login?next=` | The sign-in page. `next` must be a path on the same host. Anything else becomes `/`. A browser that already has a session goes straight to `next`. |
 | `POST /.tailisman/login` | Checks the rate limit, then CSRF, then the guest passwords for this site, then the owner password. Success sets the session cookie and answers 303 to `next`. |
-| `POST /.tailisman/exchange?next=` | Turns an issuer token into a session. A JSON post (the silent path) gets `{"device", "next"}`. The issuer's form post (the navigation path) gets a 303 to `next`. A refused token gets 403 with its code. |
+| `POST /.tailisman/exchange?next=` | Redeems a code from the tailnet listener for a session. A JSON post (the silent path) gets `{"device", "next"}`. The tailnet listener's form post (the navigation path) gets a 303 to `next`. A refused code gets 403 with its error. |
 | `GET /.tailisman/` | Says how this browser is signed in and until when, with a Sign out button. |
 | `POST /.tailisman/logout` | Clears the cookie and answers 303 to the sign-in page. After sign-out the page waits for a click before trying the tailnet path again, so Sign out works on a tailnet device too. |
 | `GET /.tailisman/healthz` | Answers `ok`. |
@@ -224,9 +254,9 @@ The client IP is `CF-Connecting-IP` when present, then the first `X-Forwarded-Fo
 
 The sign-in and sign-out forms use a double-submit token: a random value in the cookie `tailisman_csrf` (`HttpOnly; Secure; SameSite=Strict; Path=/.tailisman/`) and the same value in a hidden field. A post must carry both, matching, and its `Origin`, when present, must be the site's own origin. Gate pages send `Referrer-Policy: same-origin` rather than `no-referrer`, because under `no-referrer` Chrome 156 sends `Origin: null` on the page's own form posts, which this check refuses.
 
-`/.tailisman/exchange` takes no CSRF token. The issuer's token is the proof, and the cross-site form post from the issuer is how the navigation path works. The README's login CSRF caveat applies: anyone can post a valid token they hold, which matters only when the issuer allows several users for that audience.
+`/.tailisman/exchange` takes no CSRF token. The one-time code is the proof, and the cross-site form post from the tailnet listener is how the navigation path works. Anyone can post a valid code they hold, which matters only when `[tailnet]` allows devices of several users.
 
-Gate pages send `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' <issuer>; form-action 'self'; base-uri 'none'; frame-ancestors 'none'` and `Cache-Control: no-store`. There is no inline script.
+Gate pages send `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' <tailnet origin>; form-action 'self'; base-uri 'none'; frame-ancestors 'none'` and `Cache-Control: no-store`. There is no inline script.
 
 ## Running it as a service
 
@@ -285,13 +315,13 @@ The gate only reads files, so `ProtectSystem=strict` costs it nothing. Run `tail
 - A request that skips Cloudflare can choose its own `CF-Connecting-IP`. The global rate limit is the backstop.
 - If the site's own `header` directive sets a `Content-Security-Policy`, scope it with `not path /.tailisman/*`, or the silent tailnet path is blocked.
 - Open rules are the app's responsibility. The gate refuses to match one against a path with a `..` segment, an empty segment (`//`, which also keeps a leading `//x` from being read as a host), a `;`, an encoded `.`, `/` or `\`, or a backslash, but whatever an open rule lets through reaches the app with no session.
-- Rate limits, the issuer token replay store and the scrypt lock live in one process. Run one gate per host.
+- Rate limits, the one-time codes and the scrypt lock live in one process. Run one gate per host.
 
 ## Testing
 
 ```sh
 uv run --with pytest pytest                                     # includes tests/test_gate.py
-uv run python e2e/gate_e2e.py                                   # a real Caddy, the gate, an upstream, the issuer behind the serve stand-in
+uv run python e2e/gate_e2e.py                                   # a real Caddy, the gate with its tailnet listener behind the serve stand-in, an upstream
 uv run python e2e/gate_proxy_e2e.py                             # proxy mode with no Caddy: streaming, uploads, Range, websockets, guests, a dead app
 uv run --with playwright python e2e/gate_browser_check.py      # the same stack with Caddy's own TLS, in Playwright Chromium
 ```

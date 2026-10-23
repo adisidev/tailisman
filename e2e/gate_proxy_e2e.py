@@ -418,8 +418,8 @@ def run(stack: Stack) -> int:
 
     bases = [arg for host in (APP, OTHER, DOWN, CADDY_SITE) for arg in ("--base-url-for", f"{host}=http://127.0.0.1:{port}")]
     status = stack.tailisman("gate", "status", "--config", str(d / "gate.toml"), *bases)
-    lines = status.stdout.strip().splitlines()
-    c.check("`gate status` prints each site's upstream or forward_auth, passes the live proxy sites and flags the dead one", status.returncode == 1 and lines[0].startswith(f"{APP}: upstream http://127.0.0.1:") and lines[0].endswith(": ok") and lines[1].endswith(": ok") and "is not accepting connections" in lines[2] and lines[3].startswith(f"{CADDY_SITE}: forward_auth"), " | ".join(lines))
+    tailnet_line, *lines = status.stdout.strip().splitlines()
+    c.check("`gate status` prints each site's upstream or forward_auth, passes the live proxy sites and flags the dead one", status.returncode == 1 and lines[0].startswith(f"{APP}: upstream http://127.0.0.1:") and lines[0].endswith(": ok") and lines[1].endswith(": ok") and "is not accepting connections" in lines[2] and lines[3].startswith(f"{CADDY_SITE}: forward_auth") and tailnet_line == "tailnet: off, password paths only", " | ".join([tailnet_line, *lines]))
 
     log = (d / "gate.log").read_text()
     c.check("the dead app is logged once for two requests, without secrets", log.count("is not answering") == 1 and owner not in log and (d / "passphrase").read_text().strip() not in log, [line for line in log.splitlines() if "upstream" in line])

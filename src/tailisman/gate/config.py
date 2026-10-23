@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import dataclasses
 import re
-import time
 import tomllib
-from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .. import Verifier
-from .._token import TailismanError, normalise_origin
-from ..issuer.config import ConfigError, TcpListen, UnixListen, parse_listen
+import secrets
+
+from .._token import normalise_origin
+from ..issuer.config import Audience, ConfigError, IssuerConfig, Listen, TcpListen, UnixListen, host_name, parse_audience, parse_listen, string_list
 
 MAX_COOKIE_DAYS = 400
 ADDRESS_SPACES = ("local", "loopback")
@@ -50,7 +49,7 @@ class Site:
     host: str
     origin: str
     cookie_domain: str | None
-    verifier: Verifier | None
+    tailnet: bool
     open: tuple[OpenRule, ...]
     upstream: Upstream | None = None
     bearers: frozenset[str] = frozenset()
@@ -59,6 +58,19 @@ class Site:
     def scope(self) -> str:
         """The cookie's Domain when set, else the host name (no port: cookies ignore ports)."""
         return self.cookie_domain or host_without_port(self.host)
+
+
+@dataclasses.dataclass(frozen=True)
+class Tailnet:
+    """The gate's tailnet listener. `checks` feeds the issuer's decide(): the serve name, whois and one audience per tailnet site."""
+
+    checks: IssuerConfig
+    origin: str
+    address_space: str
+
+    @property
+    def listen(self) -> Listen:
+        return self.checks.listen
 
 
 @dataclasses.dataclass(frozen=True)
@@ -75,15 +87,15 @@ class GateConfig:
     password_file: Path
     guest_file: Path
     session_days: int
-    issuer: str | None
-    issuer_address_space: str
+    tailnet: Tailnet | None
     rate_limit: RateLimits
     sites: dict[str, Site]
 
 
-_TOP_KEYS = {"listen", "session_secret_file", "password_file", "guest_file", "session_days", "issuer", "issuer_address_space", "rate_limit", "sites"}
+_TOP_KEYS = {"listen", "session_secret_file", "password_file", "guest_file", "session_days", "tailnet", "rate_limit", "sites"}
+_TAILNET_KEYS = {"listen", "serve_host", "port", "origin", "tailscale_bin", "devices", "users", "refuse_automation", "ttl_seconds", "address_space"}
 _RATE_KEYS = {"per_ip", "global", "window_seconds"}
-_SITE_KEYS = {"host", "cookie_domain", "tailisman_key", "open", "upstream", "bearers"}
+_SITE_KEYS = {"host", "cookie_domain", "tailnet", "open", "upstream", "bearers"}
 _HOST = re.compile(r"([a-z0-9-]+(?:\.[a-z0-9-]+)+|localhost)\.?(?::([0-9]{1,5}))?", re.ASCII | re.IGNORECASE)
 BEARER_DIGEST = re.compile(r"sha256\$[A-Za-z0-9+/]{43}=")
 _OPEN = re.compile(r"(?:([A-Z]+) )?(/[^\s*?#]*)(\*)?")
@@ -104,16 +116,15 @@ def host_without_port(key: str) -> str:
     return key.rsplit(":", 1)[0]
 
 
-def load_config(path: str | Path, clock: Callable[[], float] = time.time) -> GateConfig:
+def load_config(path: str | Path) -> GateConfig:
     try:
         raw = tomllib.loads(Path(path).read_text())
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    return parse_config(raw, base=Path(path).parent, clock=clock)
+    return parse_config(raw, base=Path(path).parent)
 
 
-def parse_config(raw: dict, base: Path = Path("."), clock: Callable[[], float] = time.time) -> GateConfig:
-    """`clock` drives each site's token Verifier; the gate passes its own so one clock rules every expiry check."""
+def parse_config(raw: dict, base: Path = Path(".")) -> GateConfig:
     _no_unknown_keys(raw, _TOP_KEYS, "top level")
     secret_path = base / _required_str(raw, "session_secret_file")
     try:
@@ -128,23 +139,12 @@ def parse_config(raw: dict, base: Path = Path("."), clock: Callable[[], float] =
     days = raw.get("session_days", 30)
     if type(days) is not int or not 1 <= days <= MAX_COOKIE_DAYS:
         raise ConfigError(f"session_days must be an integer from 1 to {MAX_COOKIE_DAYS} (browsers cap cookies at {MAX_COOKIE_DAYS} days)")
-    issuer = raw.get("issuer")
-    if issuer is not None:
-        try:
-            issuer = normalise_origin(issuer) if isinstance(issuer, str) else None
-        except ValueError:
-            issuer = None
-        if issuer is None:
-            raise ConfigError("issuer must be the issuer's origin, such as https://laptop.example-tailnet.ts.net:8443")
-    space = raw.get("issuer_address_space", "local")
-    if space not in ADDRESS_SPACES:
-        raise ConfigError('issuer_address_space must be "local" (a tailnet issuer) or "loopback" (local testing only)')
     sites: dict[str, Site] = {}
     entries = raw.get("sites", [])
     if not isinstance(entries, list) or not entries:
         raise ConfigError("at least one [[sites]] table is required")
     for entry in entries:
-        site = _site(entry, issuer, clock)
+        site = _site(entry)
         if site.host in sites:
             raise ConfigError(f"site {site.host} is configured twice")
         sites[site.host] = site
@@ -154,8 +154,7 @@ def parse_config(raw: dict, base: Path = Path("."), clock: Callable[[], float] =
         password_file=base / _required_str(raw, "password_file"),
         guest_file=base / _optional_str(raw, "guest_file", "guest-passwords"),
         session_days=days,
-        issuer=issuer,
-        issuer_address_space=space,
+        tailnet=_tailnet(raw["tailnet"], listen, sites) if "tailnet" in raw else None,
         rate_limit=_rate_limits(raw.get("rate_limit", {})),
         sites=sites,
     )
@@ -180,7 +179,7 @@ def is_plain_path(path: str) -> bool:
     return ".." not in segments and "" not in segments[:-1]
 
 
-def _site(entry: object, issuer: str | None, clock: Callable[[], float]) -> Site:
+def _site(entry: object) -> Site:
     if not isinstance(entry, dict):
         raise ConfigError("each [[sites]] entry must be a table")
     _no_unknown_keys(entry, _SITE_KEYS, "[[sites]]")
@@ -195,14 +194,9 @@ def _site(entry: object, issuer: str | None, clock: Callable[[], float]) -> Site
         if "." not in domain or not (name == domain or name.endswith("." + domain)):
             raise ConfigError(f"site {host} cookie_domain {cookie_domain!r} must be {name} or a parent domain of it")
         cookie_domain = domain
-    verifier = None
-    if "tailisman_key" in entry:
-        if issuer is None:
-            raise ConfigError(f"site {host} has a tailisman_key but the gate has no issuer; set issuer at the top level")
-        try:
-            verifier = Verifier(key=_required_str(entry, "tailisman_key"), audience="https://" + host, clock=clock)
-        except TailismanError as exc:
-            raise ConfigError(f"site {host} tailisman_key: {exc}") from exc
+    tailnet = entry.get("tailnet", True)
+    if type(tailnet) is not bool:
+        raise ConfigError(f"site {host} tailnet must be true or false")
     rules = entry.get("open", [])
     if not isinstance(rules, list):
         raise ConfigError(f"site {host} open must be a list of rules")
@@ -210,7 +204,7 @@ def _site(entry: object, issuer: str | None, clock: Callable[[], float]) -> Site
     bearers = entry.get("bearers", [])
     if not isinstance(bearers, list) or not all(isinstance(b, str) and BEARER_DIGEST.fullmatch(b) for b in bearers):
         raise ConfigError(f"site {host} bearers must be a list of sha256$<base64> digests from `tailisman gate bearer-hash`")
-    return Site(host, normalise_origin("https://" + host), cookie_domain, verifier, tuple(parse_open_rule(r) for r in rules), upstream, frozenset(bearers))
+    return Site(host, normalise_origin("https://" + host), cookie_domain, tailnet, tuple(parse_open_rule(r) for r in rules), upstream, frozenset(bearers))
 
 
 def parse_upstream(text: object, host: str) -> Upstream:
@@ -231,6 +225,46 @@ def parse_upstream(text: object, host: str) -> Upstream:
     if url.scheme != "http" or not url.hostname or port is None:
         raise ConfigError(message)
     return Upstream(url.hostname, port)
+
+
+def _tailnet(table: object, public: TcpListen, sites: dict[str, Site]) -> Tailnet:
+    """Parsed with the issuer's own parsers; the audiences are the gated sites themselves."""
+    if not isinstance(table, dict):
+        raise ConfigError("tailnet must be a table")
+    _no_unknown_keys(table, _TAILNET_KEYS, "[tailnet]")
+    listen = parse_listen(table.get("listen", "127.0.0.1:8470"))
+    if listen == public:
+        raise ConfigError("[tailnet] listen must differ from the gate's own listen; tailscale serve fronts it, the public side never does")
+    serve_host = table.get("serve_host")
+    if not isinstance(serve_host, str) or ":" in serve_host or host_name(serve_host) is None:
+        raise ConfigError("[tailnet] serve_host must be this machine's MagicDNS name, such as gate.example-tailnet.ts.net, with no port")
+    port = table.get("port", 8443)
+    if type(port) is not int or not 0 < port < 65536:
+        raise ConfigError("[tailnet] port must be the HTTPS port tailscale serve uses, such as 8443")
+    try:
+        origin = normalise_origin(table["origin"] if "origin" in table else f"https://{host_name(serve_host)}:{port}")
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("[tailnet] origin must be scheme://host[:port], the address browsers reach the tailnet listener at") from exc
+    ttl = table.get("ttl_seconds", 60)
+    if type(ttl) is not int or not 10 <= ttl <= 300:
+        raise ConfigError("[tailnet] ttl_seconds must be an integer from 10 to 300")
+    space = table.get("address_space", "local")
+    if space not in ADDRESS_SPACES:
+        raise ConfigError('[tailnet] address_space must be "local" (a tailnet address) or "loopback" (local testing only)')
+    tailscale_bin = table.get("tailscale_bin", "auto")
+    if not isinstance(tailscale_bin, str) or not tailscale_bin:
+        raise ConfigError('[tailnet] tailscale_bin must be "auto" or a path')
+    devices = string_list(table.get("devices", []), "[tailnet] devices")
+    if not devices:
+        raise ConfigError("[tailnet] devices is required: the stable IDs or names of the devices that may sign in this way")
+    policy = {key: table[key] for key in ("users", "refuse_automation") if key in table}
+    audiences: dict[str, Audience] = {}
+    for site in sites.values():
+        if site.tailnet:
+            audiences[site.origin] = parse_audience({"origin": site.origin} | policy, devices)
+    # The gate never signs tokens; a random master means a stray mint() could not produce anything a verifier accepts.
+    checks = IssuerConfig(secrets.token_bytes(32), listen, ttl, tailscale_bin, host_name(serve_host), audiences)
+    return Tailnet(checks, origin, space)
 
 
 def _rate_limits(table: object) -> RateLimits:

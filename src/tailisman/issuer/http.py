@@ -25,6 +25,7 @@ from .decision import HTTP_STATUS, Grant, Refusal, RefusalCode, ServeFacts, Whoi
 
 SUBMIT_SCRIPT = "document.forms[0].submit()"
 SUBMIT_SCRIPT_HASH = base64.b64encode(hashlib.sha256(SUBMIT_SCRIPT.encode()).digest()).decode()
+Issue = Callable[[Grant, int], str]
 PAGE_CSP = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 
 
@@ -36,11 +37,13 @@ class Response:
 
 
 class IssuerApp:
-    def __init__(self, config: IssuerConfig, whois: Whois, serve_host: str, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, config: IssuerConfig, whois: Whois, serve_host: str, clock: Callable[[], float] = time.time, issue: Issue | None = None) -> None:
+        """`issue` turns a grant into what the browser carries back; a signed token by default, the gate's one-time code in the gate."""
         self.config = config
         self.whois = whois
         self.serve_host = serve_host
         self.clock = clock
+        self.issue: Issue = issue or (lambda grant, now: mint(grant, config, now))
 
     def respond(self, method: str, target: str, headers: Message) -> tuple[Response, Refusal | Grant | None]:
         url = urlsplit(target)
@@ -71,7 +74,7 @@ class IssuerApp:
         cors = _cors_headers(origin) if origin in self.config.audiences else ()
         if isinstance(outcome, Refusal):
             return _json(HTTP_STATUS[outcome.code], {"error": outcome.code}, cors), outcome
-        return _json(200, {"token": mint(outcome, self.config, int(self.clock()))}, cors), outcome
+        return _json(200, {"token": self.issue(outcome, int(self.clock()))}, cors), outcome
 
     def _start(self, headers: Message, query: dict) -> tuple[Response, Refusal | Grant]:
         return_to = _single(query, "return_to")
@@ -80,7 +83,7 @@ class IssuerApp:
         if isinstance(outcome, Refusal):
             back = origin if origin in self.config.audiences else None
             return _refusal_page(outcome, back), outcome
-        token = mint(outcome, self.config, int(self.clock()))
+        token = self.issue(outcome, int(self.clock()))
         body = (
             "<!doctype html><meta charset=utf-8><title>Signing in</title>"
             f'<form method=post action="{html.escape(return_to)}">'

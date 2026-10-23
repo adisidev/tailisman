@@ -40,7 +40,7 @@ def gate_dir(tmp_path):
 @pytest.fixture
 def gate(gate_dir):
     clock = Clock()
-    app = GateApp(load_config(gate_dir / "gate.toml", clock=clock), clock=clock)
+    app = GateApp(load_config(gate_dir / "gate.toml"), clock=clock)
     app.clock_ref = clock
     return app
 

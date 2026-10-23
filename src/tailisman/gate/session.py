@@ -44,6 +44,7 @@ class Session:
     issued_at: int
     expires_at: int
     guest: str | None = None
+    device_id: str | None = None
 
     def covers(self, host: str) -> bool:
         return host == self.scope or host.endswith("." + self.scope)
@@ -53,6 +54,7 @@ KeyFor = Callable[[str | None], bytes | None]
 """The MAC key for a cookie: None asks for the owner key, a name for that guest's key. None back refuses the cookie."""
 
 _WIRE = {"m": "method", "dev": "device", "scope": "scope", "iat": "issued_at", "exp": "expires_at"}
+_TAILNET_WIRE = _WIRE | {"id": "device_id"}
 _GUEST_WIRE = {"m": "method", "guest": "guest", "scope": "scope", "iat": "issued_at", "exp": "expires_at"}
 
 
@@ -65,7 +67,10 @@ def guest_key(secret: bytes, name: str, digest: str) -> bytes:
 
 
 def mint(session: Session, key: bytes) -> str:
-    head, wire = (f"{GUEST_PREFIX}.{session.guest}", _GUEST_WIRE) if session.method is Method.GUEST else (PREFIX, _WIRE)
+    if session.method is Method.GUEST:
+        head, wire = f"{GUEST_PREFIX}.{session.guest}", _GUEST_WIRE
+    else:
+        head, wire = PREFIX, _TAILNET_WIRE if session.device_id is not None else _WIRE
     payload = {name: getattr(session, field) for name, field in wire.items()}
     signing_input = f"{head}.{b64encode(json.dumps(payload, separators=(',', ':')).encode())}"
     return f"{signing_input}.{b64encode(_mac(key, signing_input))}"
@@ -114,20 +119,24 @@ def _parse(raw: bytes, guest: str | None) -> Session | None:
         payload = json.loads(raw.decode("utf-8"), parse_constant=_reject, parse_float=_reject)
     except (UnicodeDecodeError, ValueError):
         return None
-    wire = _WIRE if guest is None else _GUEST_WIRE
-    if not isinstance(payload, dict) or payload.keys() != wire.keys():
+    shapes = (_GUEST_WIRE,) if guest is not None else (_WIRE, _TAILNET_WIRE)
+    if not isinstance(payload, dict) or not any(payload.keys() == shape.keys() for shape in shapes):
         return None
     method, scope, issued, expires = payload["m"], payload["scope"], payload["iat"], payload["exp"]
     if not isinstance(scope, str) or not scope or not all(type(t) is int and 0 <= t <= _MAX_INT for t in (issued, expires)):
         return None
     if guest is not None:
         return Session(Method.GUEST, None, scope, issued, expires, guest) if method == Method.GUEST and payload["guest"] == guest else None
-    device = payload["dev"]
-    if method == Method.PASSWORD and device is None:
+    device, device_id = payload["dev"], payload.get("id")
+    if method == Method.PASSWORD and device is None and "id" not in payload:
         return Session(Method.PASSWORD, None, scope, issued, expires)
-    if method == Method.TAILNET and isinstance(device, str) and device:
-        return Session(Method.TAILNET, device, scope, issued, expires)
+    if method == Method.TAILNET and _text(device) and ("id" not in payload or _text(device_id)):
+        return Session(Method.TAILNET, device, scope, issued, expires, device_id=device_id)
     return None
+
+
+def _text(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
 
 
 def _reject(text: str):

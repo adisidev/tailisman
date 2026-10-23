@@ -21,7 +21,9 @@ from urllib.parse import parse_qs, quote, urlsplit
 from .. import MAX_BODY, TailismanError, extract_token
 from .._token import normalise_origin
 from ..issuer.config import ConfigError
-from ..issuer.http import Response
+from ..issuer.decision import Grant, Whois
+from ..issuer.http import IssuerApp, Response
+from .codes import CodeBook, Device
 from .config import GateConfig, Site, host_without_port
 from .decision import LOGIN_PATH, Allow, Decision, GateRequest, SignIn, Unauthorised, decide, request_host, safe_next
 from .credentials import Credentials
@@ -67,6 +69,7 @@ class GateApp:
         self.clock = clock
         self.credentials = Credentials(config.session_secret, config.password_file, config.guest_file)
         self.limiter = RateLimiter(config.rate_limit)
+        self.codes = CodeBook(config.tailnet.checks.ttl_seconds if config.tailnet else 60)
         self._password_lock = threading.Lock()
         self._down_lock = threading.Lock()
         self._down: set[str] = set()
@@ -109,6 +112,15 @@ class GateApp:
     def now(self) -> int:
         return int(self.clock())
 
+    def tailnet_app(self, whois: Whois) -> IssuerApp:
+        """The tailnet listener: the issuer's checks and CORS, answering a one-time code for this process instead of a signed token."""
+        assert self.config.tailnet is not None
+        checks = self.config.tailnet.checks
+        return IssuerApp(checks, whois, checks.serve_host, self.clock, issue=self._issue_code)
+
+    def _issue_code(self, grant: Grant, now: int) -> str:
+        return self.codes.issue(grant.audience.origin, Device(grant.peer.node_id, grant.peer.node_name, grant.peer.login), now)
+
     def check(self, request: GateRequest) -> Decision:
         return decide(request, self.config, self.credentials.session_for, self.now())
 
@@ -149,7 +161,7 @@ class GateApp:
         """After sign-out the tailnet path waits for a click; signing straight back in would make Sign out do nothing on a tailnet device."""
         csrf = _csrf_from(request) or secrets.token_urlsafe(24)
         password = self.credentials.owner.current() is not None or self.credentials.guest_count(site.host) > 0
-        tailnet = self._tailnet_on(site)
+        tailnet = self.config.tailnet if self._tailnet_on(site) else None
         parts = [f'<p class=site>{html.escape(host_without_port(site.host))}</p><h1>Sign in</h1>']
         if message:
             parts.append(f"<p class=message role=alert>{html.escape(message)}</p>")
@@ -157,7 +169,7 @@ class GateApp:
             parts.append("<p class=note>You are signed out.</p>")
         if tailnet:
             parts.append(
-                f'<section class=tailnet data-issuer="{html.escape(self.config.issuer)}" data-next="{html.escape(next_path)}" data-space="{self.config.issuer_address_space}" data-silent="{0 if signed_out else 1}">'
+                f'<section class=tailnet data-issuer="{html.escape(tailnet.origin)}" data-next="{html.escape(next_path)}" data-space="{tailnet.address_space}" data-silent="{0 if signed_out else 1}">'
                 '<p id=tailnet-status role=status aria-live=polite></p>'
                 '<button type=button id=tailnet-signin class=secondary hidden>Sign in from this device</button></section>'
             )
@@ -199,21 +211,21 @@ class GateApp:
     def _exchange(self, request: Incoming, site: Site) -> tuple[Response, str | None]:
         next_path = safe_next(request.single("next"))
         wants_json = (request.headers.get("Content-Type") or "").split(";")[0].strip().lower() == "application/json"
-        if site.verifier is None:
+        if not self._tailnet_on(site):
             return _json(404, {"error": "tailnet_off"}), None
         try:
-            claim = site.verifier.verify(extract_token(request.headers.get("Content-Type"), request.body))
+            device = self.codes.redeem(extract_token(request.headers.get("Content-Type"), request.body), site.origin, self.now())
         except TailismanError as exc:
             log = f"exchange refused for {site.host}: {exc.code}"
             if wants_json:
                 return _json(403, {"error": exc.code.value}), log
             body = f"<h1>Not signed in</h1><p>The tailnet sign-in was refused: <code>{html.escape(exc.code.value)}</code>.</p><p><a href=\"{LOGIN_PATH}?next={quote(next_path, safe='')}\">Back to sign in</a></p>"
             return _page(403, "Not signed in", body, self._csp(site)), log
-        session = self._new_session(site, Method.TAILNET, claim.node_name)
+        session = dataclasses.replace(self._new_session(site, Method.TAILNET, device.node_name), device_id=device.node_id)
         cookie = (self._session_cookie(site, session, self.credentials.owner_key()),)
-        log = f"signed in to {site.host} from {claim.node_name}"
+        log = f"signed in to {site.host} from {device.node_name}"
         if wants_json:
-            return _json(200, {"device": claim.node_name, "next": next_path}, cookie), log
+            return _json(200, {"device": device.node_name, "next": next_path}, cookie), log
         return _redirect(next_path, cookie), log
 
     def _session_page(self, request: Incoming, site: Site) -> tuple[Response, str | None]:
@@ -245,10 +257,10 @@ class GateApp:
         return _redirect(f"{LOGIN_PATH}?signed_out=1", cookies), f"signed out of {site.host}"
 
     def _tailnet_on(self, site: Site) -> bool:
-        return self.config.issuer is not None and site.verifier is not None
+        return self.config.tailnet is not None and site.tailnet
 
     def _csp(self, site: Site) -> str:
-        connect = "'self'" + (f" {self.config.issuer}" if self._tailnet_on(site) else "")
+        connect = "'self'" + (f" {self.config.tailnet.origin}" if self._tailnet_on(site) else "")
         return f"default-src 'none'; script-src 'self'; style-src 'self'; connect-src {connect}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 
     def _csrf_ok(self, request: Incoming, site: Site, form: dict[str, list[str]]) -> bool:

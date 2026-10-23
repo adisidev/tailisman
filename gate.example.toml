@@ -5,7 +5,14 @@ session_secret_file = "gate-secret"           # 32 bytes from `tailisman keygen`
 password_file = "gate-password"               # one scrypt hash line, written by `tailisman passwd`; missing means the password path is off
 guest_file = "guest-passwords"                # optional, this is the default; guest records written by `tailisman passwd --add NAME --sites ...`
 session_days = 30                             # 1 to 400
-issuer = "https://laptop.example-tailnet.ts.net:8443"   # optional; without it only the password path exists
+
+[tailnet]                                     # optional; without it only the password paths exist
+listen = "127.0.0.1:8470"                     # the default; front it with `tailscale serve --bg --https=8443 http://127.0.0.1:8470`, never Funnel
+serve_host = "gate.example-tailnet.ts.net"    # this machine's MagicDNS name; browsers reach the listener at https://<serve_host>:<port>
+port = 8443                                   # optional, the default; or origin = "https://..." for anything else
+devices = ["nEXAMPLE1CNTRL", "laptop"]        # stable IDs or names of the devices that may sign in this way
+# users = ["owner@example.com"]               # optional; only these logins, even on an allowed device
+# refuse_automation = true                    # optional; refuse a default Playwright, Puppeteer or headless Chrome
 
 [rate_limit]                                  # optional; these are the defaults
 per_ip = 5                                    # failed passwords per client IP per window
@@ -15,12 +22,12 @@ window_seconds = 900
 [[sites]]
 host = "tools.example.com"
 cookie_domain = "example.com"                 # optional; one sign-in then covers every host under example.com. Without it the cookie is host-only.
-tailisman_key = "tsk1.<43 base64url characters>"   # optional; from `tailisman key --aud https://tools.example.com` on the issuer
 open = ["/healthz", "/api/*", "POST /report"] # optional; requests that pass without a session, so the app behind must guard them itself
 
 [[sites]]
 host = "notes.example.com"
 cookie_domain = "example.com"
+tailnet = false                               # optional; this site keeps only the password paths
 
 [[sites]]
 host = "files.example.com"

@@ -1,4 +1,4 @@
-"""End to end for the gate: a real Caddy with forward_auth, the gate, a trivial upstream, and the issuer behind the serve stand-in.
+"""End to end for the gate: a real Caddy with forward_auth, the gate with its tailnet listener behind the serve stand-in, and a trivial upstream.
 
     uv run python e2e/gate_e2e.py [--caddy /opt/homebrew/bin/caddy] [--keep]
 
@@ -38,6 +38,7 @@ NOTES = "notes.example.com"
 SOLO = "solo.example.net"
 PEER = "192.0.2.1"
 BEARER = "e2e-machine-caller-token"
+CODE_SECONDS = 10
 WHOIS = {
     PEER: {
         "Node": {"ID": 1, "StableID": "nEXAMPLE1CNTRL", "Name": "laptop.example-tailnet.ts.net.", "ComputedName": "laptop", "Tags": None, "Addresses": [f"{PEER}/32"]},
@@ -91,7 +92,7 @@ class Stack:
         self.tls = tls
         self.keep = keep
         self.dir = Path(tempfile.mkdtemp(prefix="tailisman-gate-e2e-"))
-        self.ports = {name: free_port() for name in ("issuer", "serve", "gate", "upstream", "caddy")}
+        self.ports = {name: free_port() for name in ("tailnet", "serve", "gate", "upstream", "caddy")}
         self.processes: list[subprocess.Popen] = []
         self.env = os.environ | {"FAKE_TAILSCALE_STATE": str(self.dir / "state.json"), "XDG_DATA_HOME": str(self.dir / "xdg-data"), "XDG_CONFIG_HOME": str(self.dir / "xdg-config"), "PYTHONPATH": str(ROOT / "src")}
         suffix = f":{self.ports['caddy']}" if tls else ""
@@ -103,21 +104,17 @@ class Stack:
 
     def start(self) -> Stack:
         d, p = self.dir, self.ports
-        (d / "state.json").write_text(json.dumps({"whois": WHOIS, "status": {"Self": {"DNSName": "127.0.0.1."}}}))
-        self.tailisman("keygen", str(d / "issuer-secret"))
+        served = {"Web": {f"127.0.0.1:{p['serve']}": {"Handlers": {"/": {"Proxy": f"http://127.0.0.1:{p['tailnet']}"}}}}, "AllowFunnel": {}}
+        (d / "state.json").write_text(json.dumps({"whois": WHOIS, "serve_status": served}))
         self.tailisman("keygen", str(d / "gate-secret"))
-        (d / "issuer.toml").write_text(
-            f'secret_file = "issuer-secret"\nlisten = "127.0.0.1:{p["issuer"]}"\ntailscale_bin = "{ROOT / "e2e" / "fake_tailscale.py"}"\n'
-            f'serve_host = "127.0.0.1"\ndevices = ["nEXAMPLE1CNTRL"]\n\n[[audiences]]\norigin = "https://{self.tools}"\n'
-        )
-        key = self.tailisman("key", "--config", str(d / "issuer.toml"), "--aud", f"https://{self.tools}").stdout.strip()
         (d / "gate.toml").write_text(
             f'listen = "127.0.0.1:{p["gate"]}"\nsession_secret_file = "gate-secret"\npassword_file = "gate-password"\nsession_days = 30\n'
-            f'issuer = "{self.issuer_url}"\nissuer_address_space = "loopback"\n\n'
+            f'[tailnet]\nlisten = "127.0.0.1:{p["tailnet"]}"\nserve_host = "127.0.0.1"\norigin = "{self.issuer_url}"\naddress_space = "loopback"\nttl_seconds = {CODE_SECONDS}\n'
+            f'tailscale_bin = "{ROOT / "e2e" / "fake_tailscale.py"}"\ndevices = ["nEXAMPLE1CNTRL"]\n\n'
             "[rate_limit]\nper_ip = 3\nglobal = 6\nwindow_seconds = 900\n\n"
-            f'[[sites]]\nhost = "{self.tools}"\ncookie_domain = "example.com"\ntailisman_key = "{key}"\nopen = ["/healthz", "/api/*", "POST /report"]\nbearers = ["{bearer_digest(BEARER)}"]\n\n'
+            f'[[sites]]\nhost = "{self.tools}"\ncookie_domain = "example.com"\nopen = ["/healthz", "/api/*", "POST /report"]\nbearers = ["{bearer_digest(BEARER)}"]\n\n'
             f'[[sites]]\nhost = "{self.notes}"\ncookie_domain = "example.com"\n\n'
-            f'[[sites]]\nhost = "{self.solo}"\n'
+            f'[[sites]]\nhost = "{self.solo}"\ntailnet = false\n'
         )
         self.set_password(force=False)
         scheme = "https" if self.tls else "http"
@@ -129,9 +126,9 @@ class Stack:
         )
         upstream = http.server.ThreadingHTTPServer(("127.0.0.1", p["upstream"]), Upstream)
         threading.Thread(target=upstream.serve_forever, daemon=True).start()
-        self.spawn("issuer", [sys.executable, "-m", "tailisman.cli", "run", "--config", str(d / "issuer.toml")], p["issuer"])
-        self.spawn("serve stand-in", [sys.executable, str(ROOT / "e2e" / "fake_serve.py"), "--listen", f"127.0.0.1:{p['serve']}", "--backend", f"127.0.0.1:{p['issuer']}", "--peer", PEER], p["serve"])
         self.spawn("gate", [sys.executable, "-m", "tailisman.cli", "gate", "run", "--config", str(d / "gate.toml")], p["gate"])
+        wait_for_port(p["tailnet"], self.processes[-1], "gate's tailnet listener")
+        self.spawn("serve stand-in", [sys.executable, str(ROOT / "e2e" / "fake_serve.py"), "--listen", f"127.0.0.1:{p['serve']}", "--backend", f"127.0.0.1:{p['tailnet']}", "--peer", PEER], p["serve"])
         self.spawn("caddy", [self.caddy_bin, "run", "--config", str(d / "Caddyfile"), "--adapter", "caddyfile"], p["caddy"])
         return self
 
@@ -233,8 +230,11 @@ def run(stack: Stack) -> int:
     r = request(port, "GET", "/feed.xml", TOOLS, {"Authorization": f"Bearer {BEARER}-wrong", "Accept": "application/json"})
     c.check("an unlisted bearer falls through to 401", r.status == 401, r.status)
 
-    token = json.loads(request(stack.ports["serve"], "GET", "/v1/claim", "127.0.0.1", {"Origin": f"https://{TOOLS}"}).body).get("token", "")
-    c.check("the stand-in issuer mints a token for the site", token.startswith("tsm1."), token[:12])
+    def code_for(site: str) -> str:
+        return json.loads(request(stack.ports["serve"], "GET", "/v1/claim", "127.0.0.1", {"Origin": f"https://{site}"}).body).get("token", "")
+
+    token = code_for(TOOLS)
+    c.check("the gate's tailnet listener, behind the serve stand-in, hands out an opaque one-time code", re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is not None, token[:8] + "...")
     r = request(port, "POST", "/.tailisman/exchange?next=/notes", TOOLS, {"Content-Type": "application/json"}, json.dumps({"token": token}).encode())
     tailnet_cookie = r.cookie("tailisman_gate")
     c.check("exchange answers the device and sets a session cookie", r.status == 200 and r.json() == {"device": "laptop", "next": "/notes"} and tailnet_cookie is not None, (r.status, r.body))
@@ -242,7 +242,11 @@ def run(stack: Stack) -> int:
     r = get("/notes", cookie=tailnet_cookie)
     c.check("the upstream answers with the tailnet cookie", reached_upstream(r), r.status)
     r = request(port, "POST", "/.tailisman/exchange", TOOLS, {"Content-Type": "application/json"}, json.dumps({"token": token}).encode())
-    c.check("the same token is refused a second time", r.status == 403 and r.json() == {"error": "replayed"}, r.body)
+    c.check("the same code is refused a second time", r.status == 403 and r.json() == {"error": "replayed"}, r.body)
+    r = request(port, "POST", "/.tailisman/exchange", NOTES, {"Content-Type": "application/json"}, json.dumps({"token": code_for(TOOLS)}).encode())
+    c.check("a code for tools.example.com is refused at notes.example.com", r.status == 403 and r.json() == {"error": "wrong_audience"}, r.body)
+    r = request(stack.ports["serve"], "GET", "/v1/claim", "127.0.0.1", {"Origin": f"https://{SOLO}"})
+    c.check("the tailnet listener refuses a site with tailnet = false", r.status == 403 and r.json() == {"error": "unknown_audience"}, r.body)
     r = get("/", host=SOLO, cookie=tailnet_cookie)
     c.check("the example.com cookie does not open a site outside its scope", r.status == 302, r.status)
 
@@ -324,7 +328,7 @@ def run(stack: Stack) -> int:
     c.check("the new password signs in without a restart", r.status == 303 and reached_upstream(get("/notes", cookie=r.cookie("tailisman_gate"))), r.status)
 
     status = stack.tailisman("gate", "status", "--config", str(d / "gate.toml"), "--base-url-for", f"{TOOLS}=http://127.0.0.1:{port}", "--base-url-for", f"{NOTES}=http://127.0.0.1:{port}", "--base-url-for", f"{SOLO}=http://127.0.0.1:{port}", check=False)
-    c.check("`tailisman gate status --base-url-for` passes", status.returncode == 0 and status.stdout.count(": ok") == 3, status.stdout.strip().replace("\n", " | "))
+    c.check("`tailisman gate status --base-url-for` passes, the tailnet listener served with Funnel off", status.returncode == 0 and status.stdout.count(": ok") == 4 and ": ok, served, Funnel off" in status.stdout.splitlines()[0], status.stdout.strip().replace("\n", " | "))
 
     for _ in range(3):
         login("wrong", "198.51.100.10")

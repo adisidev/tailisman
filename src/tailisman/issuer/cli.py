@@ -90,7 +90,7 @@ def _check(args: argparse.Namespace) -> int:
     except ValueError:
         print("check: could not parse `tailscale serve status --json`", file=sys.stderr)
         return 1
-    hosts = _hosts_proxying_to(serve, config)
+    hosts = serve_hosts_for(serve, config.listen)
     if not hosts:
         print(f"check: no serve handler proxies to {config.listen.serve_target()}; run `tailscale serve --bg --https=8443 {config.listen.serve_target()}`", file=sys.stderr)
         return 1
@@ -106,10 +106,11 @@ def _check(args: argparse.Namespace) -> int:
     return 0
 
 
-def _hosts_proxying_to(serve: dict, config: IssuerConfig) -> list[str]:
-    targets = {config.listen.serve_target()}
-    if isinstance(config.listen, TcpListen) and config.listen.host == "127.0.0.1":
-        targets.add(f"http://localhost:{config.listen.port}")
+def serve_hosts_for(serve: dict, listen: TcpListen | UnixListen) -> list[str]:
+    """The names `tailscale serve status --json` fronts this listener as."""
+    targets = {listen.serve_target()}
+    if isinstance(listen, TcpListen) and listen.host == "127.0.0.1":
+        targets.add(f"http://localhost:{listen.port}")
     hosts = []
     for host, web in (serve.get("Web") or {}).items():
         proxies = {str(h.get("Proxy", "")).rstrip("/") for h in (web.get("Handlers") or {}).values()}

@@ -5,14 +5,21 @@ from __future__ import annotations
 import argparse
 import getpass
 import http.client
+import json
 import socket
+import socketserver
+import subprocess
+import threading
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from ..issuer.config import ConfigError
-from .config import GateConfig, Site, load_config, site_key
+from ..issuer.cli import serve_hosts_for
+from ..issuer.config import ConfigError, UnixListen, host_name, resolve_tailscale_bin
+from ..issuer.http import make_server as make_issuer_server
+from ..issuer.tailscale import cli_whois
+from .config import GateConfig, Site, Tailnet, load_config, site_key
 from .decision import LOGIN_PATH, bearer_digest
 from .http import GateApp, make_server
 from .credentials import Credentials, Guest, guest_digest, parse_guest_line, parse_guests
@@ -45,19 +52,39 @@ def add_commands(commands: argparse._SubParsersAction) -> dict[str, Callable[[ar
     return {"gate": lambda args: {"run": _run, "status": _status, "bearer-hash": _bearer_hash}[args.gate_command](args), "passwd": _passwd}
 
 
+def make_servers(config: GateConfig) -> list[socketserver.BaseServer]:
+    """The public listener, then the tailnet listener when [tailnet] is set. One process, so the codes one hands out the other redeems."""
+    app = GateApp(config)
+    password = "on" if app.credentials.owner.current() else f"off (no valid hash in {config.password_file}; run `tailisman passwd`)"
+    servers = [make_server(app)]
+    print(f"tailisman gate: listening on {config.listen.serve_target()} for {', '.join(config.sites)}; password {password}", file=sys.stderr)
+    if config.tailnet is not None:
+        tailnet = app.tailnet_app(cli_whois(resolve_tailscale_bin(config.tailnet.checks.tailscale_bin)))
+        servers.append(make_issuer_server(tailnet))
+        target = config.tailnet.listen.serve_target()
+        print(f"tailisman gate: tailnet listener on {target} as {config.tailnet.origin}; front it with `tailscale serve --bg --https={_port(config.tailnet.origin)} {target}`, never Funnel", file=sys.stderr)
+    return servers
+
+
 def _run(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    app = GateApp(config)
-    server = make_server(app)
-    password = "on" if app.credentials.owner.current() else f"off (no valid hash in {config.password_file}; run `tailisman passwd`)"
-    print(f"tailisman gate: listening on {config.listen.serve_target()} for {', '.join(config.sites)}; password {password}", file=sys.stderr)
+    public, *others = make_servers(config)
+    for server in others:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        server.serve_forever()
+        public.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
+        for server in (public, *others):
+            server.server_close()
+        if config.tailnet is not None and isinstance(config.tailnet.listen, UnixListen):
+            Path(config.tailnet.listen.path).unlink(missing_ok=True)
     return 0
+
+
+def _port(origin: str) -> int:
+    return urlsplit(origin).port or 443
 
 
 def _passwd(args: argparse.Namespace) -> int:
@@ -192,16 +219,50 @@ def _status(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     bases = _base_urls(args.base_url_for, config)
     credentials = Credentials(config.session_secret, config.password_file, config.guest_file)
-    failed = False
+    tailnet_problems = _tailnet_problems(config.tailnet) if config.tailnet else []
+    failed = bool(tailnet_problems)
+    if config.tailnet is None:
+        print("tailnet: off, password paths only")
+    else:
+        print(f"tailnet: listener {config.tailnet.listen.serve_target()}, origin {config.tailnet.origin}: {'; '.join(tailnet_problems) or 'ok, served, Funnel off'}")
     for site in config.sites.values():
         problems = _probe(site, bases.get(site.host, f"https://{site.host}")) + _probe_upstream(site)
         failed = failed or bool(problems)
-        tailnet = "on" if config.issuer and site.verifier else "off"
+        tailnet = "on" if config.tailnet and site.tailnet else "off"
         rules = ", ".join(str(rule) for rule in site.open) or "none"
         guests = credentials.guest_count(site.host)
         mode = f"upstream {site.upstream}" if site.upstream else "forward_auth"
         print(f"{site.host}: {mode}, scope {site.scope}, tailnet {tailnet}, guests {guests}, bearers {len(site.bearers)}, open {rules}: {'; '.join(problems) or 'ok'}")
     return 1 if failed else 0
+
+
+def _tailnet_problems(tailnet: Tailnet) -> list[str]:
+    """What `tailisman check` asks of an issuer: the listener answers, serve fronts it under serve_host, and Funnel is off."""
+    listen = tailnet.listen
+    try:
+        if isinstance(listen, UnixListen):
+            with socket.socket(socket.AF_UNIX) as probe:
+                probe.settimeout(3)
+                probe.connect(listen.path)
+        else:
+            socket.create_connection((listen.host, listen.port), timeout=3).close()
+    except OSError as exc:
+        return [f"the tailnet listener is not accepting connections: {exc}"]
+    try:
+        binary = resolve_tailscale_bin(tailnet.checks.tailscale_bin)
+        result = subprocess.run([binary, "serve", "status", "--json"], capture_output=True, text=True, check=False, timeout=10)
+        serve = json.loads(result.stdout or "{}")
+    except (ConfigError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return [f"could not read `tailscale serve status --json`: {exc}"]
+    hosts = serve_hosts_for(serve, listen)
+    if not hosts:
+        return [f"no serve handler proxies to it; run `tailscale serve --bg --https={_port(tailnet.origin)} {listen.serve_target()}`"]
+    if not any(host_name(h) == tailnet.checks.serve_host for h in hosts):
+        return [f"serve fronts it as {', '.join(hosts)}, but serve_host is {tailnet.checks.serve_host}"]
+    funnel = [h for h in hosts if (serve.get("AllowFunnel") or {}).get(h)]
+    if funnel:
+        return [f"Funnel is ON for {', '.join(funnel)}; the tailnet listener must only be reachable on the tailnet (`tailscale funnel reset`)"]
+    return []
 
 
 def _base_urls(pairs: list[str], config: GateConfig) -> dict[str, str]:

@@ -1,3 +1,4 @@
+import base64
 import json
 import math
 import os
@@ -9,7 +10,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from tailisman._token import Claim, derive_consumer_key, encode, format_key, new_nonce
+from conftest import PEERS
 from tailisman.cli import main
 from tailisman.gate import password as password_module
 from tailisman.gate.config import ConfigError, load_config, parse_config
@@ -18,21 +19,24 @@ from tailisman.gate.http import GateApp
 from tailisman.gate.password import CONSONANTS, GROUPS, VOWELS, PasswordHash, generate_passphrase, hash_password, parse_hash
 from tailisman.gate.session import Method, Session, first_valid, mint, session_key, verify
 
-MASTER = bytes(range(32))
 SECRET = bytes(range(32, 64))
 PASSWORD = "correct-horse-battery"
 TOOLS = "tools.example.com"
 NOTES = "notes.example.com"
 SOLO = "solo.example.net"
-ISSUER = "https://laptop.example-tailnet.ts.net:8443"
-TOOLS_KEY = format_key(derive_consumer_key(MASTER, f"https://{TOOLS}"))
+SERVE_HOST = "laptop.example-tailnet.ts.net"
+TAILNET = f"https://{SERVE_HOST}:8443"
 
 CONFIG = f"""
 listen = "127.0.0.1:8471"
 session_secret_file = "gate-secret"
 password_file = "gate-password"
 session_days = 30
-issuer = "{ISSUER}"
+
+[tailnet]
+listen = "127.0.0.1:8470"
+serve_host = "{SERVE_HOST}"
+devices = ["laptop"]
 
 [rate_limit]
 per_ip = 3
@@ -42,15 +46,16 @@ window_seconds = 900
 [[sites]]
 host = "{TOOLS}"
 cookie_domain = "example.com"
-tailisman_key = "{TOOLS_KEY}"
 open = ["/healthz", "/api/*", "POST /report"]
 
 [[sites]]
 host = "{NOTES}"
 cookie_domain = "example.com"
+tailnet = false
 
 [[sites]]
 host = "{SOLO}"
+tailnet = false
 """
 
 
@@ -74,7 +79,7 @@ def write_gate_dir(directory: Path, password: str | None = PASSWORD) -> Path:
 @pytest.fixture
 def gate(tmp_path):
     clock = Clock()
-    app = GateApp(load_config(write_gate_dir(tmp_path), clock=clock), clock=clock)
+    app = GateApp(load_config(write_gate_dir(tmp_path)), clock=clock)
     app.clock_ref = clock
     return app
 
@@ -175,6 +180,8 @@ def test_session_payload_must_be_exactly_the_expected_shape():
 
     good = {"m": "password", "dev": None, "scope": "example.com", "iat": 1000, "exp": 5000}
     assert verify(signed(good), owner(key), TOOLS, 2000) is not None
+    with_id = verify(signed(good | {"m": "tailnet", "dev": "laptop", "id": "nEXAMPLE1CNTRL"}), owner(key), TOOLS, 2000)
+    assert (with_id.device, with_id.device_id) == ("laptop", "nEXAMPLE1CNTRL")
     for bad in [
         good | {"extra": 1},
         {k: v for k, v in good.items() if k != "dev"},
@@ -183,6 +190,9 @@ def test_session_payload_must_be_exactly_the_expected_shape():
         good | {"dev": "laptop"},
         good | {"exp": 5000.5},
         good | {"scope": ""},
+        good | {"id": "nEXAMPLE1CNTRL"},
+        good | {"m": "tailnet", "dev": "laptop", "id": ""},
+        good | {"m": "tailnet", "dev": "laptop", "id": None},
     ]:
         assert verify(signed(bad), owner(key), TOOLS, 2000) is None, bad
 
@@ -284,24 +294,35 @@ def test_next_is_only_ever_a_same_host_path(text, expected):
         ('[[sites]]\nhost = "tools.example.com"\nopen = ["/api*"]', "open rule"),
         ('[[sites]]\nhost = "tools.example.com"\nopen = ["/api/../x"]', ".. segment"),
         ('[[sites]]\nhost = "https://tools.example.com"', "DNS name"),
-        ('[[sites]]\nhost = "tools.example.com"\ntailisman_key = "tsk1.nope"', "tailisman_key"),
+        ('[[sites]]\nhost = "tools.example.com"\ntailnet = "yes"', "tailnet must be true or false"),
+        ('[[sites]]\nhost = "tools.example.com"\ntailisman_key = "tsk1.x"', "unknown key(s) at [[sites]]: tailisman_key"),
+        ('issuer = "https://laptop.example-tailnet.ts.net:8443"\n[[sites]]\nhost = "tools.example.com"', "unknown key(s) at top level: issuer"),
+        ('[tailnet]\nserve_host = "x.example-tailnet.ts.net"\n[[sites]]\nhost = "tools.example.com"', "[tailnet] devices is required"),
+        ('[tailnet]\ndevices = ["laptop"]\n[[sites]]\nhost = "tools.example.com"', "[tailnet] serve_host must be"),
+        ('[tailnet]\nlisten = "127.0.0.1:8471"\nserve_host = "x.example-tailnet.ts.net"\ndevices = ["laptop"]\n[[sites]]\nhost = "tools.example.com"', "must differ"),
         ('[[sites]]\nhost = "a.example.com"\n[[sites]]\nhost = "A.example.com."', "twice"),
     ],
 )
 def test_config_refuses_bad_sites(tmp_path, text, error):
     (tmp_path / "gate-secret").write_bytes(SECRET)
-    head = 'session_secret_file = "gate-secret"\npassword_file = "gate-password"\nissuer = "https://laptop.example-tailnet.ts.net:8443"\n'
+    head = 'session_secret_file = "gate-secret"\npassword_file = "gate-password"\n'
     path = tmp_path / "gate.toml"
     path.write_text(head + text)
     with pytest.raises(ConfigError, match=re.escape(error)):
         load_config(path)
 
 
-def test_a_tailisman_key_without_an_issuer_is_a_config_error(tmp_path):
+def test_the_tailnet_table_makes_each_tailnet_site_an_audience_with_its_policy(tmp_path):
     (tmp_path / "gate-secret").write_bytes(SECRET)
-    raw = {"session_secret_file": "gate-secret", "password_file": "p", "sites": [{"host": TOOLS, "tailisman_key": TOOLS_KEY}]}
-    with pytest.raises(ConfigError, match="no issuer"):
-        parse_config(raw, base=tmp_path)
+    tailnet = {"serve_host": "Gate.Example-Tailnet.ts.net", "devices": ["laptop"], "users": ["owner@example.com"], "refuse_automation": True}
+    sites = [{"host": TOOLS}, {"host": NOTES, "tailnet": False}, {"host": "files.example.com:8443"}]
+    config = parse_config({"session_secret_file": "gate-secret", "password_file": "p", "tailnet": tailnet, "sites": sites}, base=tmp_path)
+    assert config.tailnet.origin == "https://gate.example-tailnet.ts.net:8443"
+    assert sorted(config.tailnet.checks.audiences) == ["https://files.example.com:8443", f"https://{TOOLS}"]
+    audience = config.tailnet.checks.audiences[f"https://{TOOLS}"]
+    assert (audience.devices, audience.users, audience.refuse_automation) == (frozenset({"laptop"}), frozenset({"owner@example.com"}), True)
+    explicit = parse_config({"session_secret_file": "gate-secret", "password_file": "p", "tailnet": tailnet | {"origin": "https://gate.example-tailnet.ts.net:9443"}, "sites": sites}, base=tmp_path)
+    assert explicit.tailnet.origin == "https://gate.example-tailnet.ts.net:9443"
 
 
 # decide() through the verify route
@@ -388,7 +409,7 @@ def test_login_page_says_when_the_password_path_is_off(tmp_path):
 def test_login_page_headers_and_tailnet_script(gate):
     page = call(gate, "GET", "/.tailisman/login?next=/x")
     csp = header(page, "Content-Security-Policy")[0]
-    assert f"connect-src 'self' {ISSUER}" in csp and "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
+    assert f"connect-src 'self' {TAILNET}" in csp and "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert header(page, "Referrer-Policy") == ["same-origin"] and header(page, "Cache-Control") == ["no-store"]
     assert b'src="/.tailisman/login.js"' in page.body and b'data-next="/x"' in page.body
     assert b"<script>" not in page.body
@@ -460,29 +481,80 @@ def test_expired_session_is_refused(gate):
 # Tailnet exchange, session page, sign out
 
 
-def token_for(origin=f"https://{TOOLS}", node="laptop", now=1_800_000_000):
-    claim = Claim("nEXAMPLE1CNTRL", node, "owner@example.com", origin, now, now + 60, new_nonce())
-    return encode(claim, derive_consumer_key(MASTER, origin))
+SERVE = {"Host": f"{SERVE_HOST}:8443", "X-Forwarded-Host": f"{SERVE_HOST}:8443", "X-Forwarded-For": "192.0.2.1", "X-Forwarded-Proto": "https", "Tailscale-User-Login": "owner@example.com"}
 
 
-def test_exchange_turns_a_token_into_a_tailnet_session_once(gate):
-    token = token_for()
+def tailnet_answer(app, origin=f"https://{TOOLS}", peer="192.0.2.1", path="/v1/claim", extra=None):
+    """Asks the gate's tailnet listener, through the same headers tailscale serve sets."""
+    listener = app.tailnet_app(lambda ip: PEERS.get(ip))
+    response, _ = listener.respond("GET", path, headers(SERVE | {"X-Forwarded-For": peer, "Origin": origin} | (extra or {})))
+    return response
+
+
+def code_for(app, origin=f"https://{TOOLS}"):
+    return json.loads(tailnet_answer(app, origin).body)["token"]
+
+
+def exchange(app, code, host=TOOLS, path="/.tailisman/exchange"):
+    return call(app, "POST", path, host=host, body=json.dumps({"token": code}).encode(), Content_Type="application/json")
+
+
+def test_the_tailnet_listener_answers_an_opaque_one_time_code_with_the_issuers_cors(gate):
+    response = tailnet_answer(gate)
+    code = json.loads(response.body)["token"]
+    assert response.status == 200 and re.fullmatch(r"[A-Za-z0-9_-]{43}", code)
+    assert header(response, "Access-Control-Allow-Origin") == [f"https://{TOOLS}"]
+    assert code_for(gate) != code
+
+
+@pytest.mark.parametrize(
+    "origin,peer,extra,error",
+    [
+        (f"https://{NOTES}", "192.0.2.1", {}, "unknown_audience"),
+        (f"https://{TOOLS}", "192.0.2.2", {}, "not_on_allowlist"),
+        (f"https://{TOOLS}", "192.0.2.4", {}, "tagged_node"),
+        (f"https://{TOOLS}", "192.0.2.1", {"Tailscale-Funnel-Request": "?1"}, "funnel_request"),
+        (f"https://{TOOLS}", "192.0.2.1", {"Host": "evil.example.net"}, "wrong_host"),
+    ],
+)
+def test_the_tailnet_listener_runs_the_issuers_device_checks(gate, origin, peer, extra, error):
+    response = tailnet_answer(gate, origin, peer, extra=extra)
+    assert json.loads(response.body) == {"error": error}
+
+
+def test_exchange_turns_a_code_into_a_tailnet_session_once(gate):
+    token = code_for(gate)
     body = json.dumps({"token": token}).encode()
     response = call(gate, "POST", "/.tailisman/exchange?next=/notes", body=body, Content_Type="application/json")
     assert response.status == 200 and json.loads(response.body) == {"device": "laptop", "next": "/notes"}
-    allowed = verify_request(gate, cookie=cookie_from(response, "tailisman_gate"))
+    cookie = cookie_from(response, "tailisman_gate")
+    allowed = verify_request(gate, cookie=cookie)
     assert header(allowed, "X-Tailisman-Session") == ["tailnet"]
+    assert json.loads(base64.urlsafe_b64decode(cookie.split(".")[1] + "==")) == {"m": "tailnet", "dev": "laptop", "scope": "example.com", "iat": 1_800_000_000, "exp": 1_800_000_000 + 30 * 86400, "id": "nEXAMPLE1CNTRL"}
     again = call(gate, "POST", "/.tailisman/exchange", body=body, Content_Type="application/json")
     assert again.status == 403 and json.loads(again.body) == {"error": "replayed"}
 
 
-def test_exchange_form_post_redirects_and_wrong_audience_is_refused(gate):
-    form = urlencode({"token": token_for()}).encode()
+def test_the_navigation_path_posts_a_code_back_and_gets_a_redirect(gate):
+    start = tailnet_answer(gate, path=f"/v1/start?return_to=https://{TOOLS}/.tailisman/exchange?next=/notes")
+    code = re.search(rb'name=token value="([^"]+)"', start.body).group(1).decode()
+    form = urlencode({"token": code}).encode()
     response = call(gate, "POST", "/.tailisman/exchange?next=//evil.example.net", body=form, Content_Type="application/x-www-form-urlencoded")
     assert response.status == 303 and header(response, "Location") == ["/"]
-    other = json.dumps({"token": token_for(origin=f"https://{NOTES}")}).encode()
-    assert call(gate, "POST", "/.tailisman/exchange", body=other, Content_Type="application/json").status == 403
-    assert call(gate, "POST", "/.tailisman/exchange", host=NOTES, body=other, Content_Type="application/json").status == 404
+
+
+def test_a_code_is_refused_when_unknown_expired_or_for_another_site(gate, tmp_path):
+    assert json.loads(exchange(gate, "A" * 43).body) == {"error": "malformed"}
+    late = code_for(gate)
+    gate.clock_ref.now += 60
+    assert json.loads(exchange(gate, late).body) == {"error": "expired"}
+    path = tmp_path / "two.toml"
+    path.write_text(CONFIG.replace('tailnet = false\n\n[[sites]]\nhost = "solo', '\n[[sites]]\nhost = "solo'))
+    app = GateApp(load_config(path), clock=gate.clock_ref)
+    elsewhere = code_for(app, origin=f"https://{TOOLS}")
+    assert json.loads(exchange(app, elsewhere, host=NOTES).body) == {"error": "wrong_audience"}
+    assert json.loads(exchange(app, elsewhere, host=TOOLS).body) == {"error": "replayed"}
+    assert exchange(gate, code_for(gate), host=SOLO).status == 404
 
 
 def test_session_page_and_sign_out(gate):

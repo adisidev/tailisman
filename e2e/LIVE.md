@@ -126,6 +126,8 @@ check --browser chrome --simulate-off-tailnet --expect unreachable
 
 Each run prints one JSON line and exits non-zero when the outcome is not the one expected. Add `--screenshot PATH` to keep a picture. The WebKit run is Playwright's WebKit build, headless, not Safari itself.
 
+Real Safari on macOS was observed once by hand, on a live gated site in a private window: it signed in silently, with no local-network prompt. That matches the Playwright WebKit result. The likely reason is that WebKit has not shipped Local Network Access, which is inferred, not measured.
+
 ## 7. Allowlist removal and automation (config 2)
 
 Stop the issuer and start it with `live-2.toml`. The demo keeps its key, because the key depends only on the secret and the origin.

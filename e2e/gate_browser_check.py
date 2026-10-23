@@ -1,10 +1,13 @@
 """The gate in a real browser: Playwright Chromium against the e2e stack with Caddy serving its own TLS on loopback.
 
+One gate process holds both listeners: the public one behind Caddy, and the tailnet one behind the serve stand-in,
+which hands out the one-time codes the public one redeems.
+
     uv run --with playwright python e2e/gate_browser_check.py [--screenshots DIR] [--headed]
 
 Chromium resolves *.example.com and *.example.net to 127.0.0.1 and accepts Caddy's internal certificate. The page then
-sits in Chrome's loopback address space, like the stand-in issuer, so the gate config sets the test knob
-issuer_address_space = "loopback"; on a real tailnet it stays "local". Prints one line per check, exits 1 on any failure.
+sits in Chrome's loopback address space, like the serve stand-in, so the gate config sets the test knob
+[tailnet] address_space = "loopback"; on a real tailnet it stays "local". Prints one line per check, exits 1 on any failure.
 """
 
 from __future__ import annotations
@@ -12,13 +15,14 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from gate_e2e import SOLO, TOOLS, Checks, Stack  # noqa: E402
+from gate_e2e import CODE_SECONDS, NOTES, SOLO, TOOLS, Checks, Stack  # noqa: E402
 
 
 def main() -> int:
@@ -31,7 +35,7 @@ def main() -> int:
     stack = Stack(args.caddy, tls=True, keep=args.keep).start()
     c = Checks()
     port = stack.ports["caddy"]
-    tools, solo = f"https://{TOOLS}:{port}", f"https://{SOLO}:{port}"
+    tools, notes, solo = f"https://{TOOLS}:{port}", f"https://{NOTES}:{port}", f"https://{SOLO}:{port}"
     if args.screenshots:
         args.screenshots.mkdir(parents=True, exist_ok=True)
 
@@ -72,11 +76,28 @@ def main() -> int:
             fallback.route(f"{stack.issuer_url}/v1/claim*", lambda route: route.abort())
             fallback.goto(f"{tools}/notes")
             fallback.wait_for_selector("#tailnet-signin:not([hidden])", timeout=15000)
-            c.check("an unreachable issuer shows the \"Sign in from this device\" button", fallback.is_visible("text=Sign in from this device"))
+            c.check("an unreachable tailnet listener shows the \"Sign in from this device\" button", fallback.is_visible("text=Sign in from this device"))
             shot(fallback, "4-button")
             fallback.click("#tailnet-signin")
             fallback.wait_for_url(f"{tools}/notes", timeout=15000)
-            c.check("the button signs in through the issuer's navigation path", '"upstream": true' in fallback.content(), fallback.url)
+            c.check("the button signs in through the tailnet listener's navigation path", '"upstream": true' in fallback.content(), fallback.url)
+
+            claim_js = "issuer => fetch(issuer + '/v1/claim', {targetAddressSpace: 'loopback'}).then(r => r.json()).then(b => b.token)"
+            redeem_js = "code => fetch('/.tailisman/exchange', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({token: code})}).then(async r => [r.status, await r.json()])"
+            codes = context()
+            at_tools, at_notes = codes.new_page(), codes.new_page()
+            at_tools.goto(f"{tools}/.tailisman/login?signed_out=1")
+            at_notes.goto(f"{notes}/.tailisman/login?signed_out=1")
+            code = at_tools.evaluate(claim_js, stack.issuer_url)
+            first, second = at_tools.evaluate(redeem_js, code), at_tools.evaluate(redeem_js, code)
+            c.check("a code the page fetched itself signs in once and is refused as replayed the second time", first[0] == 200 and second == [403, {"error": "replayed"}], (first, second))
+            code = at_tools.evaluate(claim_js, stack.issuer_url)
+            elsewhere = at_notes.evaluate(redeem_js, code)
+            c.check("a code fetched on tools.example.com is refused at notes.example.com", elsewhere == [403, {"error": "wrong_audience"}], elsewhere)
+            code = at_tools.evaluate(claim_js, stack.issuer_url)
+            time.sleep(CODE_SECONDS + 1)
+            late = at_tools.evaluate(redeem_js, code)
+            c.check(f"a code redeemed after its {CODE_SECONDS} s lifetime is refused as expired", late == [403, {"error": "expired"}], late)
 
             form = context().new_page()
             form.goto(f"{solo}/private?x=1")

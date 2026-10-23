@@ -1,15 +1,20 @@
 # tailisman
 
-tailisman lets a public web app learn that the visitor's browser runs on one of your own tailnet devices. The app gets a signed claim that lives 60 seconds, verifies it on its server, and turns it into its own session cookie.
+tailisman lets a public web app learn that the visitor's browser runs on one of your own tailnet devices.
+
+There are two ways to use it.
+
+- The gate is the default. One `tailisman gate run` process sits in front of any number of sites, with no change to the apps, and signs a visitor in from an allowlisted device, a backup password or a guest password. It has its own tailnet listener, so it needs no separate issuer and signs nothing. Start with [docs/GATE.md](docs/GATE.md).
+- Token mode is the option for embedding device sign-in in your own app's sessions. The standalone issuer hands the browser a signed claim that lives 60 seconds, and the app verifies it on its server with the Python or Node verifier and turns it into its own session cookie. Most of this README covers token mode; the gate has its own section near the end.
 
 It is for a single owner with a site on the public internet (for example `heckle.example.com` behind Cloudflare) who wants their laptop and phone signed in without a password, and nobody else. It checks the device as well as the user, because the owner's own scripts and agents run as the owner's user.
 
 There are four parts in this repository, all MIT licensed.
 
-- The issuer is a small Python HTTP server on a tailnet host, reachable only through `tailscale serve`.
+- The issuer (token mode) is a small Python HTTP server on a tailnet host, reachable only through `tailscale serve`.
 - The browser snippet is `client/tailisman.js`, one ES module with no dependencies.
 - The verifiers are a Python package (`tailisman`, standard library only) and a Node package (`js/`, `node:crypto` only).
-- The gate (`tailisman gate`) signs visitors in to whole sites, through the issuer, a backup password or a guest password, with no change to the apps. It proxies sites itself behind a Cloudflare Tunnel, or answers Caddy's `forward_auth`. See [docs/GATE.md](docs/GATE.md).
+- The gate (`tailisman gate`) signs visitors in to whole sites, through its own tailnet listener, a backup password or a guest password, with no change to the apps. It proxies sites itself behind a Cloudflare Tunnel, or answers Caddy's `forward_auth`. See [docs/GATE.md](docs/GATE.md).
 
 ## How it works
 
@@ -28,7 +33,7 @@ There are four parts in this repository, all MIT licensed.
  <-----------------------------------   Set-Cookie: its own session
 ```
 
-In Playwright's WebKit build (WebKit 27.2, headless) the silent fetch worked without a prompt. Real Safari on macOS and iOS has not been tested. Chrome and Firefox gate it behind a one-time Local Network Access permission per site. When the fetch fails, the snippet shows a button. Clicking it navigates to the issuer, which answers with a form that posts the token back to the same `/auth/tailisman` endpoint. A top-level navigation is never gated, so the button works in every browser.
+In Playwright's WebKit build (WebKit 27.2, headless) the silent fetch worked without a prompt, and real Safari on macOS did the same when observed once by hand in a private window. Safari on iOS has not been tested. Chrome and Firefox gate it behind a one-time Local Network Access permission per site. When the fetch fails, the snippet shows a button. Clicking it navigates to the issuer, which answers with a form that posts the token back to the same `/auth/tailisman` endpoint. A top-level navigation is never gated, so the button works in every browser.
 
 A visitor who is not on the tailnet cannot resolve the issuer's `*.ts.net` name, so their fetch fails at DNS and they never see a permission prompt. They see the button only, and clicking it leads to a DNS error page.
 
@@ -202,12 +207,13 @@ With loopback TCP, any process on the issuer host can connect to the issuer, sen
 
 ## Gating whole sites
 
-The gate is for sites you do not want to change. A browser on an allowlisted tailnet device is signed in through the issuer, and any other browser gets a password form. One sign-in can cover every host under a domain, and named guest passwords open only the sites they were given, revocable one at a time. Behind a Cloudflare Tunnel the gate is the proxy: the tunnel points every gated hostname at the gate, and each site's `upstream` names the app's loopback port, with streaming, uploads, Range requests and websockets passed through. Behind Caddy, Caddy asks the gate about every request through `forward_auth`. [docs/GATE.md](docs/GATE.md) has both setups, the config reference, guests, service files and the caveats.
+The gate is for sites you do not want to change. A browser on an allowlisted tailnet device is signed in through the gate's own tailnet listener, and any other browser gets a password form. The tailnet listener runs the issuer's device checks but answers a one-time code that only this gate process can redeem, so there is no separate issuer, no key per site, and nothing for a sleeping laptop to take down. One sign-in can cover every host under a domain, and named guest passwords open only the sites they were given, revocable one at a time. Behind a Cloudflare Tunnel the gate is the proxy: the tunnel points every gated hostname at the gate, and each site's `upstream` names the app's loopback port, with streaming, uploads, Range requests and websockets passed through. Behind Caddy, Caddy asks the gate about every request through `forward_auth`. [docs/GATE.md](docs/GATE.md) has both setups, the config reference, guests, service files and the caveats.
 
 ```sh
 tailisman keygen ~/.config/tailisman/gate-secret
-cp gate.example.toml ~/.config/tailisman/gate.toml      # edit sites, issuer and each site's tailisman_key
+cp gate.example.toml ~/.config/tailisman/gate.toml      # edit sites and [tailnet] (serve_host, devices)
 tailisman passwd --config ~/.config/tailisman/gate.toml --generate --out ~/.config/tailisman/gate-passphrase
+tailscale serve --bg --https=8443 http://127.0.0.1:8470  # the tailnet listener; never Funnel
 tailisman gate run --config ~/.config/tailisman/gate.toml
 ```
 
@@ -274,7 +280,7 @@ These come from one live run on a real tailnet on 23 October 2026, with Tailscal
 
 On the navigation path the consumer's `Set-Cookie` on the answer to the issuer's cross-site form POST was kept in both Chrome and Firefox, and the page showed the visitor as signed in.
 
-Not tested: real Safari on macOS, Safari on iPhone and iPad, Chrome on Android, and the permission prompt as a person sees it in a normal (headed) Chrome or Firefox window. A headless browser cannot show a prompt, so Chrome denies straight away and Firefox waits.
+Observed once by hand, not in this matrix: real Safari on macOS, in a private window on a live site, signed in silently with no prompt. Not tested: Safari on iPhone and iPad, Chrome on Android, and the permission prompt as a person sees it in a normal (headed) Chrome or Firefox window. A headless browser cannot show a prompt, so Chrome denies straight away and Firefox waits.
 
 ### Local Network Access
 
@@ -284,7 +290,7 @@ What does work:
 
 1. Granting the permission once per site. After that the silent fetch works with no visible step. In Chrome, `navigator.permissions.query({name: "local-network-access"})` reports the state. Firefox and WebKit do not support that query.
 2. A top-level navigation. Clicking a link or button that goes to the issuer is not gated in any browser tested. That is why the snippet falls back to a button and the issuer answers `/v1/start` with a form that posts the token back.
-3. WebKit 27.2 under Playwright, headless, showed no such gate, and the silent fetch just worked there. Real Safari on macOS and iOS was not run, so whether Safari itself gates it is untested.
+3. WebKit 27.2 under Playwright, headless, showed no such gate, and the silent fetch just worked there. Real Safari on macOS, observed once by hand in a private window, also signed in with no prompt, likely because WebKit has not shipped Local Network Access (inferred, not measured). Safari on iOS was not run.
 
 The browser checks Local Network Access after DNS. A visitor who is not on the tailnet fails at DNS first and never sees a prompt.
 
