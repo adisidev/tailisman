@@ -40,11 +40,10 @@ const B64URL = /^[A-Za-z0-9_-]*$/;
 const NONCE = /^[A-Za-z0-9_-]{22}$/;
 const INTEGER = /^[0-9]+$/;
 
-/** Whether JSON.parse hands its reviver the source text (Node 21 and later); without it a float `iat` cannot be told from an integer. */
 /** @typedef {(this: unknown, key: string, value: unknown, context?: {source?: string}) => unknown} SourceReviver */
 const parseWithSource = /** @type {(text: string, reviver: SourceReviver) => unknown} */ (JSON.parse);
 
-/** Whether JSON.parse hands its reviver the source text (Node 21 and later); without it a float `iat` cannot be told from an integer. */
+/** Whether JSON.parse hands its reviver the source text (Node 22 and later); without it a float `iat` cannot be told from an integer. */
 export const SOURCE_TEXT = parseWithSource("1", (_key, _value, context) => context?.source === "1") === true;
 
 /**
