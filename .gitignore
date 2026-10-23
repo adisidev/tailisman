@@ -5,3 +5,4 @@ node_modules/
 /live/out/
 .DS_Store
 dist/
+*.tgz
