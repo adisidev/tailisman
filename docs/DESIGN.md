@@ -48,6 +48,8 @@ The `audiences` table, keyed by normalised origin, is the CORS allowlist, the `r
 - Node strips TypeScript types only outside `node_modules`. The Node package works through a linked install and fails with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` when copied into `node_modules`.
 - With a stand-in for serve on loopback, the navigation path signed in under Playwright's Chromium 156, WebKit 27.2 and Firefox 157, and the silent path did too once the address space matched. These runs do not exercise Local Network Access, which needs the live tailnet.
 
+- Under launchd, the macOS app binary started straight from Python prints "The Tailscale GUI failed to start" with exit status 0 instead of answering `whois`, so every claim was refused as `unknown_peer`. It answers as the CLI once `SHLVL` or `TERM` is in its environment, so the issuer sets `SHLVL` when the environment has neither.
+
 ## What it does not do
 
 No JWT, no key IDs, no refresh, no issuer-side sessions, no whois cache, no Funnel support, no cookie minting (the consumer owns its session format), and no device enrolment flow.
