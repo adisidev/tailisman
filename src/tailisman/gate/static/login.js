@@ -3,13 +3,12 @@ import { claim, navigate } from "/.tailisman/tailisman.js";
 const section = document.querySelector("section.tailnet");
 const status = document.getElementById("tailnet-status");
 const button = document.getElementById("tailnet-signin");
-const { issuer, next, space } = section.dataset;
+const { issuer, next, space, silent } = section.dataset;
 const exchange = `/.tailisman/exchange?next=${encodeURIComponent(next)}`;
 
 button.addEventListener("click", () => navigate({ issuer, exchange }));
-status.textContent = "Looking for your tailnet device…";
 
-const result = await claim({ issuer, targetAddressSpace: space });
+const result = silent === "1" ? await lookForDevice() : { ok: false, reason: "unreachable" };
 if (result.ok) {
   const response = await fetch(exchange, {
     method: "POST",
@@ -33,4 +32,9 @@ if (result.ok) {
   status.textContent = "";
   button.hidden = false;
   section.dataset.outcome = "unreachable";
+}
+
+function lookForDevice() {
+  status.textContent = "Looking for your tailnet device…";
+  return claim({ issuer, targetAddressSpace: space });
 }

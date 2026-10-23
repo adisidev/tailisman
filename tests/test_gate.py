@@ -374,7 +374,7 @@ def test_login_page_headers_and_tailnet_script(gate):
     page = call(gate, "GET", "/.tailisman/login?next=/x")
     csp = header(page, "Content-Security-Policy")[0]
     assert f"connect-src 'self' {ISSUER}" in csp and "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
-    assert header(page, "Referrer-Policy") == ["no-referrer"] and header(page, "Cache-Control") == ["no-store"]
+    assert header(page, "Referrer-Policy") == ["same-origin"] and header(page, "Cache-Control") == ["no-store"]
     assert b'src="/.tailisman/login.js"' in page.body and b'data-next="/x"' in page.body
     assert b"<script>" not in page.body
     csrf_cookie = [c for c in header(page, "Set-Cookie") if c.startswith("tailisman_csrf=")][0]
@@ -480,7 +480,10 @@ def test_session_page_and_sign_out(gate):
     refused = call(gate, "POST", "/.tailisman/logout", body=b"csrf=" + b"A" * 32, Cookie=f"tailisman_gate={cookie}; tailisman_csrf={csrf}")
     assert refused.status == 403
     out = call(gate, "POST", "/.tailisman/logout", body=f"csrf={csrf}".encode(), Cookie=f"tailisman_gate={cookie}; tailisman_csrf={csrf}")
-    assert out.status == 303 and header(out, "Location") == ["/.tailisman/login"]
+    assert out.status == 303 and header(out, "Location") == ["/.tailisman/login?signed_out=1"]
+    after = call(gate, "GET", "/.tailisman/login?signed_out=1")
+    assert b"You are signed out." in after.body and b'data-silent="0"' in after.body
+    assert b'data-silent="1"' in call(gate, "GET", "/.tailisman/login").body
     clears = sorted(c for c in header(out, "Set-Cookie") if c.startswith("tailisman_gate=;"))
     assert clears == [
         "tailisman_gate=; Max-Age=0; Path=/; Domain=example.com; Secure; HttpOnly; SameSite=Lax",

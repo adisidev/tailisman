@@ -132,18 +132,21 @@ class GateApp:
         next_path = safe_next(request.single("next"))
         if self._current_session(request, site):
             return _redirect(next_path), None
-        return self._render_login(request, site, next_path, 200, None), None
+        return self._render_login(request, site, next_path, 200, None, signed_out=request.single("signed_out") == "1"), None
 
-    def _render_login(self, request: Incoming, site: Site, next_path: str, status: int, message: str | None, extra: Headers = ()) -> Response:
+    def _render_login(self, request: Incoming, site: Site, next_path: str, status: int, message: str | None, extra: Headers = (), signed_out: bool = False) -> Response:
+        """After sign-out the tailnet path waits for a click; signing straight back in would make Sign out do nothing on a tailnet device."""
         csrf = _csrf_from(request) or secrets.token_urlsafe(24)
         password = self.password.current()
         tailnet = self._tailnet_on(site)
         parts = [f'<p class=site>{html.escape(host_without_port(site.host))}</p><h1>Sign in</h1>']
         if message:
             parts.append(f"<p class=message role=alert>{html.escape(message)}</p>")
+        if signed_out:
+            parts.append("<p class=note>You are signed out.</p>")
         if tailnet:
             parts.append(
-                f'<section class=tailnet data-issuer="{html.escape(self.config.issuer)}" data-next="{html.escape(next_path)}" data-space="{self.config.issuer_address_space}">'
+                f'<section class=tailnet data-issuer="{html.escape(self.config.issuer)}" data-next="{html.escape(next_path)}" data-space="{self.config.issuer_address_space}" data-silent="{0 if signed_out else 1}">'
                 '<p id=tailnet-status role=status aria-live=polite></p>'
                 '<button type=button id=tailnet-signin class=secondary hidden>Sign in from this device</button></section>'
             )
@@ -223,7 +226,7 @@ class GateApp:
             body = '<h1>Still signed in</h1><p>This form had expired. <a href="/.tailisman/">Try again</a>.</p>'
             return _page(403, "Still signed in", body, self._csp(site)), None
         cookies = tuple(_clear(COOKIE, "/", domain, "Lax") for domain in {site.cookie_domain, None})
-        return _redirect(LOGIN_PATH, cookies), f"signed out of {site.host}"
+        return _redirect(f"{LOGIN_PATH}?signed_out=1", cookies), f"signed out of {site.host}"
 
     def _tailnet_on(self, site: Site) -> bool:
         return self.config.issuer is not None and site.verifier is not None
@@ -308,7 +311,8 @@ def _page(status: int, title: str, main: str, csp: str, extra: Headers = ()) -> 
         '<meta name=viewport content="width=device-width, initial-scale=1"><meta name=color-scheme content="light dark">'
         f'<title>{html.escape(title)}</title><link rel=stylesheet href="/.tailisman/gate.css"><main>{main}</main>'
     )
-    headers = _base_headers("text/html; charset=utf-8") + (("Content-Security-Policy", csp), ("Referrer-Policy", "no-referrer"))
+    # Not no-referrer: under no-referrer Chrome 156 sends Origin: null on the page's own form posts, which the Origin check refuses.
+    headers = _base_headers("text/html; charset=utf-8") + (("Content-Security-Policy", csp), ("Referrer-Policy", "same-origin"))
     return Response(status, headers + extra, document.encode())
 
 
