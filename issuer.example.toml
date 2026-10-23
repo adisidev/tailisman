@@ -1,0 +1,18 @@
+# tailisman issuer config. Parsed once at startup; any error stops the issuer from starting.
+
+secret_file = "/etc/tailisman/secret"   # 32 bytes from `tailisman keygen`; relative paths resolve against this file's directory
+listen = "127.0.0.1:8470"               # loopback only; or "unix:/run/tailisman/issuer.sock"
+ttl_seconds = 60                        # 10 to 300
+tailscale_bin = "auto"                  # the macOS app binary, then `tailscale` on PATH; or an absolute path
+
+# Default device allowlist. An entry is a node stable ID (survives renames), a short name, or a MagicDNS name.
+devices = ["nEXAMPLE1CNTRL", "phone"]
+
+[[audiences]]
+origin = "https://heckle.example.com"
+
+[[audiences]]
+origin = "https://notes.example.com"
+devices = ["nEXAMPLE1CNTRL"]            # replaces the default list for this origin
+users = ["owner@example.com"]           # leave out to accept any user of an allowed device
+refuse_automation = true                # best effort and spoofable; see the README

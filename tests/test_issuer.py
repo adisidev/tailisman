@@ -44,10 +44,10 @@ def test_token_for_one_audience_fails_under_another_audience_key(issuer):
 
 
 @pytest.mark.parametrize("peer,how", [
-    ("100.64.0.1", "short name"),
-    ("100.64.0.2", "stable ID"),
-    ("100.64.0.5", "MagicDNS name with trailing dot"),
-    ("100.64.0.6", "MagicDNS name without trailing dot"),
+    ("192.0.2.1", "short name"),
+    ("192.0.2.2", "stable ID"),
+    ("192.0.2.5", "MagicDNS name with trailing dot"),
+    ("192.0.2.6", "MagicDNS name without trailing dot"),
 ])
 def test_allowlist_entries_match(issuer, peer, how):
     response, _ = claim(issuer, peer=peer)
@@ -55,9 +55,9 @@ def test_allowlist_entries_match(issuer, peer, how):
 
 
 @pytest.mark.parametrize("peer,code", [
-    ("100.64.0.3", "not_on_allowlist"),
-    ("100.64.0.4", "tagged_node"),
-    ("100.64.0.99", "unknown_peer"),
+    ("192.0.2.3", "not_on_allowlist"),
+    ("192.0.2.4", "tagged_node"),
+    ("192.0.2.99", "unknown_peer"),
 ])
 def test_refused_peers(issuer, peer, code):
     response, body = claim(issuer, peer=peer)
@@ -80,7 +80,7 @@ def test_missing_origin_is_unknown_audience(issuer):
     {"X-Forwarded-For": None},
     {"X-Forwarded-Proto": None},
     {"X-Forwarded-Proto": "http"},
-    {"X-Forwarded-For": "1.2.3.4, 100.64.0.1"},
+    {"X-Forwarded-For": "1.2.3.4, 192.0.2.1"},
     {"X-Forwarded-For": "not-an-ip"},
 ])
 def test_requests_not_from_serve_get_421(issuer, headers):
@@ -91,7 +91,7 @@ def test_requests_not_from_serve_get_421(issuer, headers):
 def test_repeated_forwarded_for_headers_get_421(issuer):
     conn = issuer.connect()
     conn.putrequest("GET", "/v1/claim")
-    for name, value in [("Origin", HECKLE), ("X-Forwarded-Proto", "https"), ("X-Forwarded-For", "100.64.0.1"), ("X-Forwarded-For", "100.64.0.2")]:
+    for name, value in [("Origin", HECKLE), ("X-Forwarded-Proto", "https"), ("X-Forwarded-For", "192.0.2.1"), ("X-Forwarded-For", "192.0.2.2")]:
         conn.putheader(name, value)
     conn.endheaders()
     assert conn.getresponse().status == 421
@@ -105,7 +105,7 @@ def test_funnel_traffic_is_refused(issuer):
 def test_refusal_order_puts_serve_checks_before_audience(issuer):
     assert claim(issuer, origin="https://evil.example.com", headers={"Tailscale-Funnel-Request": "?1"})[1] == {"error": "funnel_request"}
     assert claim(issuer, origin="https://evil.example.com", headers={"X-Forwarded-Proto": None})[1] == {"error": "not_behind_serve"}
-    assert claim(issuer, origin="https://evil.example.com", peer="100.64.0.99")[1] == {"error": "unknown_audience"}
+    assert claim(issuer, origin="https://evil.example.com", peer="192.0.2.99")[1] == {"error": "unknown_audience"}
 
 
 def test_login_header_must_match_whois(issuer):
@@ -114,8 +114,8 @@ def test_login_header_must_match_whois(issuer):
 
 
 def test_user_restriction(issuer):
-    assert claim(issuer, origin=NOTES, peer="100.64.0.5")[1] == {"error": "user_not_allowed"}
-    assert claim(issuer, origin=HECKLE, peer="100.64.0.5")[0].status == 200
+    assert claim(issuer, origin=NOTES, peer="192.0.2.5")[1] == {"error": "user_not_allowed"}
+    assert claim(issuer, origin=HECKLE, peer="192.0.2.5")[0].status == 200
 
 
 def test_refuse_automation_by_flag_and_by_user_agent(issuer):
@@ -159,13 +159,13 @@ def test_start_refuses_return_to_outside_the_audiences(issuer, return_to):
 
 
 def test_start_refusal_links_back_to_the_audience(issuer):
-    response, body = issuer.request("GET", f"/v1/start?return_to={quote(HECKLE + '/x')}", peer="100.64.0.3")
+    response, body = issuer.request("GET", f"/v1/start?return_to={quote(HECKLE + '/x')}", peer="192.0.2.3")
     assert response.status == 403
     assert b"not_on_allowlist" in body and f'href="{HECKLE}"'.encode() in body
 
 
 def test_status_page_shows_device_and_verdicts(issuer):
-    response, body = issuer.request("GET", "/", peer="100.64.0.3")
+    response, body = issuer.request("GET", "/", peer="192.0.2.3")
     page = body.decode()
     assert response.status == 200
     assert "tablet" in page and "nEXAMPLE3CNTRL" in page
@@ -174,19 +174,19 @@ def test_status_page_shows_device_and_verdicts(issuer):
 
 
 def test_status_page_for_an_allowed_device_lists_accepting_sites(issuer):
-    page = issuer.request("GET", "/", peer="100.64.0.1")[1].decode()
+    page = issuer.request("GET", "/", peer="192.0.2.1")[1].decode()
     assert f"{HECKLE}: accepts" in page
     assert "devices = [" not in page
 
 
 def test_status_page_escapes_html(issuer):
-    page = issuer.request("GET", "/", peer="100.64.0.7")[1].decode()
+    page = issuer.request("GET", "/", peer="192.0.2.7")[1].decode()
     assert "evil&lt;script&gt;x" in page
     assert "<script>" not in page
 
 
 def test_status_page_shows_tagged_devices(issuer):
-    page = issuer.request("GET", "/", peer="100.64.0.4")[1].decode()
+    page = issuer.request("GET", "/", peer="192.0.2.4")[1].decode()
     assert "tag:server" in page and "refuses: tagged_node" in page
 
 
@@ -213,7 +213,7 @@ def test_unix_socket_listener(short_tmp, monkeypatch):
     try:
         assert stat.S_IMODE(os.stat(sock).st_mode) == 0o660
         conn = UnixHTTPConnection(str(sock))
-        conn.request("GET", "/v1/claim", headers={"Origin": HECKLE, "X-Forwarded-For": "100.64.0.1", "X-Forwarded-Proto": "https"})
+        conn.request("GET", "/v1/claim", headers={"Origin": HECKLE, "X-Forwarded-For": "192.0.2.1", "X-Forwarded-Proto": "https"})
         response = conn.getresponse()
         assert response.status == 200 and json.loads(response.read())["token"].startswith("tsm1.")
     finally:

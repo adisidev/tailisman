@@ -2,7 +2,7 @@
 """Stands in for the tailscale CLI in tests and local demos. Never talks to a tailnet.
 
 Reads the JSON file named by FAKE_TAILSCALE_STATE:
-  {"whois": {"100.64.0.1": <whois --json output>}, "serve_status": {...}, "serve_status_text": "..."}
+  {"whois": {"192.0.2.1": <whois --json output>}, "serve_status": {...}, "serve_status_text": "..."}
 """
 import json
 import os

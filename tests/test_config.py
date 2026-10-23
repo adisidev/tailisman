@@ -38,7 +38,7 @@ def test_loopback_and_unix_listen_accepted(tmp_path, listen, expected):
     assert config(tmp_path, listen=listen).listen == expected
 
 
-@pytest.mark.parametrize("listen", ["0.0.0.0:8470", "100.64.0.1:8470", "192.168.1.2:8470", "localhost:8470", "[::]:8470", "8470", "127.0.0.1:0", "unix:relative.sock"])
+@pytest.mark.parametrize("listen", ["0.0.0.0:8470", "192.0.2.1:8470", "192.168.1.2:8470", "localhost:8470", "[::]:8470", "8470", "127.0.0.1:0", "unix:relative.sock"])
 def test_non_loopback_listen_refused(tmp_path, listen):
     with pytest.raises(ConfigError):
         config(tmp_path, listen=listen)

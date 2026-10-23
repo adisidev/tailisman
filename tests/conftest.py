@@ -26,13 +26,13 @@ def node(ip, stable_id, name, login, tags=None):
 
 
 PEERS = dict([
-    node("100.64.0.1", "nEXAMPLE1CNTRL", "laptop", "owner@example.com"),
-    node("100.64.0.2", "nEXAMPLE2CNTRL", "phone", "owner@example.com"),
-    node("100.64.0.3", "nEXAMPLE3CNTRL", "tablet", "owner@example.com"),
-    node("100.64.0.4", "nEXAMPLE4CNTRL", "server", "tagged-devices", ["tag:server"]),
-    node("100.64.0.5", "nEXAMPLE5CNTRL", "guest", "guest@example.com"),
-    node("100.64.0.6", "nEXAMPLE6CNTRL", "desk", "owner@example.com"),
-    node("100.64.0.7", "nEXAMPLE7CNTRL", "evil<script>x", "owner@example.com"),
+    node("192.0.2.1", "nEXAMPLE1CNTRL", "laptop", "owner@example.com"),
+    node("192.0.2.2", "nEXAMPLE2CNTRL", "phone", "owner@example.com"),
+    node("192.0.2.3", "nEXAMPLE3CNTRL", "tablet", "owner@example.com"),
+    node("192.0.2.4", "nEXAMPLE4CNTRL", "server", "tagged-devices", ["tag:server"]),
+    node("192.0.2.5", "nEXAMPLE5CNTRL", "guest", "guest@example.com"),
+    node("192.0.2.6", "nEXAMPLE6CNTRL", "desk", "owner@example.com"),
+    node("192.0.2.7", "nEXAMPLE7CNTRL", "evil<script>x", "owner@example.com"),
 ])
 
 CONFIG = """
@@ -84,7 +84,7 @@ class Issuer:
         self.server = make_server(self.app)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def request(self, method, path, peer="100.64.0.1", origin=None, headers=None, serve=True, login=None):
+    def request(self, method, path, peer="192.0.2.1", origin=None, headers=None, serve=True, login=None):
         sent = {}
         if serve:
             sent.update({"X-Forwarded-For": peer, "X-Forwarded-Proto": "https"})

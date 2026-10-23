@@ -1,6 +1,6 @@
 """A stand-in for `tailscale serve` for local browser runs: forwards to the issuer and sets the headers serve would.
 
-    uv run python e2e/fake_serve.py --listen 127.0.0.1:8443 --backend 127.0.0.1:8470 --peer 100.64.0.1 --login owner@example.com
+    uv run python e2e/fake_serve.py --listen 127.0.0.1:8443 --backend 127.0.0.1:8470 --peer 192.0.2.1 --login owner@example.com
 
 Like serve, it drops any client-sent X-Forwarded-* and Tailscale-* headers. It speaks plain HTTP, so it only
 stands in for serve on loopback; it is not a security boundary.
@@ -20,7 +20,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--listen", default="127.0.0.1:8443")
     parser.add_argument("--backend", default="127.0.0.1:8470")
-    parser.add_argument("--peer", default="100.64.0.1", help="the tailnet IP to report in X-Forwarded-For")
+    parser.add_argument("--peer", default="192.0.2.1", help="the tailnet IP to report in X-Forwarded-For")
     parser.add_argument("--login", default="owner@example.com", help="Tailscale-User-Login to send; empty for a tagged node")
     args = parser.parse_args()
     backend_host, backend_port = args.backend.rsplit(":", 1)
