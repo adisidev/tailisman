@@ -31,7 +31,7 @@ GUESTS_DIR = "guests"
 
 
 def add_commands(commands: argparse._SubParsersAction) -> dict[str, Callable[[argparse.Namespace], int]]:
-    gate = commands.add_parser("gate", help="the password-or-tailnet gate in front of Caddy sites")
+    gate = commands.add_parser("gate", help="the password-or-tailnet gate: the reverse proxy for a tunnel, or Caddy's forward_auth target")
     gate_commands = gate.add_subparsers(dest="gate_command", required=True)
     run = gate_commands.add_parser("run", help="serve the gate on its loopback address, in the foreground")
     run.add_argument("--config", required=True)
@@ -44,7 +44,7 @@ def add_commands(commands: argparse._SubParsersAction) -> dict[str, Callable[[ar
     action = passwd.add_mutually_exclusive_group()
     action.add_argument("--generate", action="store_true", help="make the owner passphrase instead of prompting, and write it to --out")
     action.add_argument("--add", metavar="NAME", help="give guest NAME a generated passphrase for --sites, written to guests/NAME next to the config")
-    action.add_argument("--revoke", metavar="NAME", help="remove guest NAME; their sessions end at once")
+    action.add_argument("--revoke", metavar="NAME", help="remove guest NAME; their sessions end on their next request, no restart")
     action.add_argument("--list", action="store_true", help="list guests and their sites")
     passwd.add_argument("--out", help="where --generate writes the passphrase, mode 0600")
     passwd.add_argument("--sites", help="with --add: comma-separated [[sites]] hosts the guest may sign in to")

@@ -649,3 +649,9 @@ def test_owner_cookies_minted_by_the_released_gate_still_verify(gate, tmp_path):
     tailnet = verify_request(gate, cookie=GOLDEN_TAILNET_COOKIE)
     assert tailnet.status == 200 and header(tailnet, "X-Tailisman-Session") == ["tailnet"]
     assert verify_request(gate, host=NOTES, cookie=GOLDEN_TAILNET_COOKIE).status == 302
+
+
+def test_a_password_piped_from_its_file_signs_in_despite_the_trailing_newline(gate):
+    assert post_login(gate, PASSWORD + "\n").status == 303
+    assert post_login(gate, PASSWORD + "\r\n", ip="198.51.100.3").status == 303
+    assert post_login(gate, PASSWORD + "\n\n", ip="198.51.100.4").status == 401

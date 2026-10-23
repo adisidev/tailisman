@@ -200,7 +200,7 @@ class GateApp:
                 return self._render_login(request, site, next_path, 429, message, (("Retry-After", str(wait)),)), f"login refused for {site.host}: rate limited, {ip}"
             if not self._csrf_ok(request, site, form):
                 return self._render_login(request, site, next_path, 403, "This form had expired. Try again."), f"login refused for {site.host}: csrf, {ip}"
-            opened = self.credentials.opens(_one(form, "password"), site.host)
+            opened = self.credentials.opens(_typed_password(form), site.host)
             if opened is None:
                 self.limiter.record_failure(ip, now)
                 return self._render_login(request, site, next_path, 401, "That password did not work."), f"login refused for {site.host}: wrong password, {ip}"
@@ -314,6 +314,12 @@ def _form(body: bytes) -> dict[str, list[str]]:
         return parse_qs(body.decode("utf-8"), keep_blank_values=True)
     except (UnicodeDecodeError, ValueError):
         return {}
+
+
+def _typed_password(form: dict[str, list[str]]) -> str | None:
+    """A browser never sends a line break in a password field; one comes from piping a passphrase file, so drop it."""
+    value = _one(form, "password")
+    return value.removesuffix("\n").removesuffix("\r") if value is not None else None
 
 
 def _one(form: dict[str, list[str]], name: str) -> str | None:

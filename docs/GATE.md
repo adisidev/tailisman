@@ -57,7 +57,7 @@ tailisman passwd --config ~/.config/tailisman/gate.toml --generate --out ~/.conf
 tailisman gate run --config ~/.config/tailisman/gate.toml
 ```
 
-`passwd --generate` writes a passphrase such as `bavu-tiko-relu-mazo-pine-dusa` to the `--out` file and its hash to the config's `password_file`, both mode 0600, and prints only the two paths. Read the passphrase from the file, store it in your password manager, and delete the file. Without `--generate`, `passwd` asks for a password twice (at least 12 characters).
+`passwd --generate` writes a passphrase such as `bavu-tiko-relu-mazo-pine-dusa` to the `--out` file and its hash to the config's `password_file`, both mode 0600, and prints only the two paths (each as written, so the hash path is the config's `password_file` value). The gate reads `gate.toml` once at startup, so restart it after editing that file; the password and guest files are re-read on change. Read the passphrase from the file, store it in your password manager, and delete the file. Without `--generate`, `passwd` asks for a password twice (at least 12 characters).
 
 For the tailnet path, fill in `[tailnet]` with this machine's MagicDNS name and the devices to allow, and put the tailnet listener behind serve:
 
