@@ -1,0 +1,17 @@
+{
+  "name": "tailisman",
+  "version": "0.1.0",
+  "description": "Verify tailisman tokens in Node. No dependencies.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src"],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
