@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tailisman"
+version = "0.1.0"
+description = "Prove to a public web app that the visitor's browser runs on one of your allowlisted tailnet devices."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+tailisman = "tailisman.issuer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tailisman"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
