@@ -54,6 +54,8 @@ tailisman gate status --config ~/.config/tailisman/gate.toml
 
 ```caddy
 (tailisman_gate) {
+	header ?Cache-Control "private"
+	header >Cache-Control "public" "private"
 	route {
 		reverse_proxy /.tailisman/* 127.0.0.1:8471
 		forward_auth 127.0.0.1:8471 {
@@ -67,6 +69,8 @@ tools.example.com {
 	reverse_proxy 127.0.0.1:9000
 }
 ```
+
+The two `header` lines keep gated pages out of shared caches. Without them Cloudflare caches responses it considers static (`.js`, `.css`, images, PDFs) at its edge, and serves the cached copy to anyone who asks, with no request reaching Caddy or the gate. This was measured on a live site: a `.js` file fetched before the gate was put in front was still served from the edge cache afterwards, until the cache was purged. The first line marks a response `private` when the app set no `Cache-Control`, and the second, deferred with `>` until the app has answered, turns an app's `public` into `private`. Purge the CDN's cache for a host when you first gate it.
 
 The `route` block keeps the order: the gate's own pages first, then the check for everything else. The same snippet works when Caddy terminates TLS itself and when a Cloudflare Tunnel terminates TLS and talks plain HTTP to Caddy (`http://tools.example.com { ... }`). The gate sets its cookies `Secure` either way, because the browser is always on HTTPS.
 

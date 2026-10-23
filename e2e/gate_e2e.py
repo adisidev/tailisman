@@ -69,6 +69,8 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if self.path.startswith("/cacheable"):
+            self.send_header("Cache-Control", "public, max-age=600")
         self.end_headers()
         self.wfile.write(body)
 
@@ -118,7 +120,7 @@ class Stack:
         global_options = "\tadmin off\n\tlocal_certs\n\tskip_install_trust\n" + ("\tauto_https disable_redirects\n" if self.tls else "\tauto_https off\n")
         (d / "Caddyfile").write_text(
             f"{{\n{global_options}}}\n\n"
-            f"(tailisman_gate) {{\n\troute {{\n\t\treverse_proxy /.tailisman/* 127.0.0.1:{p['gate']}\n\t\tforward_auth 127.0.0.1:{p['gate']} {{\n\t\t\turi /.tailisman/verify\n\t\t}}\n\t}}\n}}\n\n"
+            f"(tailisman_gate) {{\n\theader ?Cache-Control \"private\"\n\theader >Cache-Control \"public\" \"private\"\n\troute {{\n\t\treverse_proxy /.tailisman/* 127.0.0.1:{p['gate']}\n\t\tforward_auth 127.0.0.1:{p['gate']} {{\n\t\t\turi /.tailisman/verify\n\t\t}}\n\t}}\n}}\n\n"
             + "".join(f"{scheme}://{host}:{p['caddy']} {{\n\timport tailisman_gate\n\treverse_proxy 127.0.0.1:{p['upstream']}\n}}\n\n" for host in (TOOLS, SOLO))
         )
         upstream = http.server.ThreadingHTTPServer(("127.0.0.1", p["upstream"]), Upstream)
@@ -254,6 +256,9 @@ def run(stack: Stack) -> int:
     c.check("the password path answers 303 to next with a session cookie", r.status == 303 and r.header("Location") == "/notes" and password_cookie is not None, (r.status, r.header("Location")))
     r = get("/notes", cookie=password_cookie)
     c.check("the upstream answers with the password cookie", reached_upstream(r), r.status)
+    c.check("a gated answer with no Cache-Control is marked private", r.header("Cache-Control") == "private", r.header("Cache-Control"))
+    r = get("/cacheable.js", cookie=password_cookie)
+    c.check("a gated answer the app marked public is marked private", r.header("Cache-Control") == "private, max-age=600", r.header("Cache-Control"))
     r = get("/", host=SOLO)
     solo_csrf = r.status == 302 and get("/.tailisman/login", host=SOLO).cookie("tailisman_csrf")
     body = urlencode({"csrf": solo_csrf, "password": passphrase, "next": "/"}).encode()

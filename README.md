@@ -213,6 +213,8 @@ tailisman gate run --config ~/.config/tailisman/gate.toml
 
 ```caddy
 (tailisman_gate) {
+	header ?Cache-Control "private"
+	header >Cache-Control "public" "private"
 	route {
 		reverse_proxy /.tailisman/* 127.0.0.1:8471
 		forward_auth 127.0.0.1:8471 {
