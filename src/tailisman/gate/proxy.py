@@ -30,6 +30,7 @@ _SET_BY_GATE = frozenset({SESSION_HEADER.lower(), USER_HEADER.lower(), "x-forwar
 _GATE_COOKIES = frozenset({COOKIE, CSRF_COOKIE})
 _PUBLIC = re.compile(r"\bpublic\b", re.IGNORECASE)
 _NO_BODY = frozenset({204, 304})
+_CDN_CACHE = frozenset({"cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control"})
 
 
 class BadRequest(Exception):
@@ -101,8 +102,8 @@ def upstream_headers(headers: Message, identity: Headers, peer: str, body: int |
 
 
 def client_headers(headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """The app's headers minus hop-by-hop ones, with the cache rule the Caddy snippet applies: no Cache-Control becomes private, public becomes private."""
-    dropped = _HOP_BY_HOP | set(_tokens(value for name, value in headers if name.lower() == "connection"))
+    """The app's headers minus hop-by-hop ones, with the cache rule the Caddy snippet applies: no Cache-Control becomes private, public becomes private, and the CDN cache headers Cloudflare honours ahead of Cache-Control are removed."""
+    dropped = _HOP_BY_HOP | _CDN_CACHE | set(_tokens(value for name, value in headers if name.lower() == "connection"))
     kept = [(name, value) for name, value in headers if name.lower() not in dropped and not name.lower().startswith("proxy-")]
     if not any(name.lower() == "cache-control" for name, _ in kept):
         return kept + [("Cache-Control", "private")]

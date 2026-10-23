@@ -99,7 +99,7 @@ class App(http.server.BaseHTTPRequestHandler):
             "/video": self._video,
             "/no-content": lambda: self._send(204, length=False),
             "/etag": self._etag,
-            "/cache-public": lambda: self._send(200, b"cached", (("Cache-Control", "public, max-age=60"),)),
+            "/cache-public": lambda: self._send(200, b"cached", (("Cache-Control", "public, max-age=60"), ("CDN-Cache-Control", "public, max-age=86400"), ("Cloudflare-CDN-Cache-Control", "max-age=86400"), ("Surrogate-Control", "max-age=86400"))),
             "/cookies": lambda: self._send(200, b"two", (("Set-Cookie", "a=1; Path=/"), ("Set-Cookie", "b=2; Path=/"))),
             "/ws": self._websocket,
             "/public/gone": lambda: self._send(404, b"gone"),
@@ -297,6 +297,8 @@ def run(stack: Stack) -> int:
     c.check("a method beyond the usual ones (PROPFIND) reaches the app", r.status == 200 and r.json()["method"] == "PROPFIND", r.status)
     r = send("GET", "/cache-public", headers=cookie(owner))
     c.check("an app's public Cache-Control becomes private", r.header("Cache-Control") == "private, max-age=60", r.header("Cache-Control"))
+    cdn = {name: r.header(name) for name in ("CDN-Cache-Control", "Cloudflare-CDN-Cache-Control", "Surrogate-Control")}
+    c.check("the app's CDN-Cache-Control, Cloudflare-CDN-Cache-Control and Surrogate-Control are removed", set(cdn.values()) == {None}, cdn)
     r = send("GET", "/cookies", headers=cookie(owner))
     c.check("two Set-Cookie lines from the app stay two lines", sorted(r.cookies()) == ["a", "b"], [v for k, v in r.headers if k.lower() == "set-cookie"])
 

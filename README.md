@@ -223,6 +223,9 @@ For a tunnel, give each `[[sites]]` entry an `upstream = "http://127.0.0.1:9000"
 (tailisman_gate) {
 	header ?Cache-Control "private"
 	header >Cache-Control "public" "private"
+	header -CDN-Cache-Control
+	header -Cloudflare-CDN-Cache-Control
+	header -Surrogate-Control
 	route {
 		reverse_proxy /.tailisman/* 127.0.0.1:8471
 		forward_auth 127.0.0.1:8471 {

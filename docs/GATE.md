@@ -113,7 +113,7 @@ What the proxy handles, each checked by `e2e/gate_proxy_e2e.py` against a real a
 
 Headers sent on to the app: hop-by-hop headers are dropped (`Connection` and the names it lists, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade` except on a websocket upgrade). So is every header whose name contains `_`, as nginx and Caddy do by default: CGI, WSGI and PHP turn both `-` and `_` into `_`, so `X_Tailisman_Session` would otherwise reach such an app as the identity header. A request with a folded header line (obs-fold, a value carrying CR or LF) gets 400. The gate's own cookies, `tailisman_gate` and `tailisman_csrf`, are removed from `Cookie`, so the app never sees the session. Any client-sent `X-Tailisman-Session` and `X-Tailisman-User` are removed, then set from the session: the method, and for a guest their name. `Host` stays as the browser sent it. `X-Forwarded-For` gets the peer appended, `X-Forwarded-Proto` keeps cloudflared's value and is `https` when there is none, and `X-Forwarded-Host` is the `Host`.
 
-Headers sent back: hop-by-hop headers are dropped and the rest pass through, each `Set-Cookie` on its own line. The same cache rule as the Caddy snippet applies: an answer with no `Cache-Control` gets `Cache-Control: private`, and `public` in one the app sent becomes `private`. A tunnel's own HTTP cache is Cloudflare's edge cache, which honours `private`, so this keeps gated answers out of it. Purge the zone's cache for a host when you first gate it, because the edge may still hold copies from before.
+Headers sent back: hop-by-hop headers are dropped and the rest pass through, each `Set-Cookie` on its own line. The same cache rule as the Caddy snippet applies: an answer with no `Cache-Control` gets `Cache-Control: private`, and `public` in one the app sent becomes `private`. `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control` and `Surrogate-Control` are removed, since Cloudflare honours them ahead of `Cache-Control`. A tunnel's own HTTP cache is Cloudflare's edge cache, which honours `private`, so this keeps gated answers out of it. Purge the zone's cache for a host when you first gate it, because the edge may still hold copies from before.
 
 Open rules work as they do behind Caddy, and the gate refuses to match them against the same suspicious paths.
 
@@ -123,6 +123,9 @@ Open rules work as they do behind Caddy, and the gate refuses to match them agai
 (tailisman_gate) {
 	header ?Cache-Control "private"
 	header >Cache-Control "public" "private"
+	header -CDN-Cache-Control
+	header -Cloudflare-CDN-Cache-Control
+	header -Surrogate-Control
 	route {
 		reverse_proxy /.tailisman/* 127.0.0.1:8471
 		forward_auth 127.0.0.1:8471 {
@@ -137,7 +140,7 @@ tools.example.com {
 }
 ```
 
-The two `header` lines keep gated pages out of shared caches. Without them Cloudflare caches responses it considers static (`.js`, `.css`, images, PDFs) at its edge, and serves the cached copy to anyone who asks, with no request reaching Caddy or the gate. This was measured on a live site: a `.js` file fetched before the gate was put in front was still served from the edge cache afterwards, until the cache was purged. The first line marks a response `private` when the app set no `Cache-Control`, and the second, deferred with `>` until the app has answered, turns an app's `public` into `private`. Purge the CDN's cache for a host when you first gate it.
+The `header` lines keep gated pages out of shared caches. Without them Cloudflare caches responses it considers static (`.js`, `.css`, images, PDFs) at its edge, and serves the cached copy to anyone who asks, with no request reaching Caddy or the gate. This was measured on a live site: a `.js` file fetched before the gate was put in front was still served from the edge cache afterwards, until the cache was purged. The first line marks a response `private` when the app set no `Cache-Control`, and the second, deferred with `>` until the app has answered, turns an app's `public` into `private`. The three `-` lines remove `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control` and `Surrogate-Control`, which Cloudflare honours ahead of `Cache-Control`, so an app that sends one could still have a gated answer cached at the edge. Caddy defers a `-` until the app has answered (`caddy adapt` shows `"deferred": true`), so the app's own copy is removed. Purge the CDN's cache for a host when you first gate it.
 
 The `route` block keeps the order: the gate's own pages first, then the check for everything else. The same snippet works when Caddy terminates TLS itself and when a Cloudflare Tunnel terminates TLS and talks plain HTTP to Caddy (`http://tools.example.com { ... }`). The gate sets its cookies `Secure` either way, because the browser is always on HTTPS.
 

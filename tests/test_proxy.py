@@ -115,3 +115,8 @@ def test_a_folded_header_value_is_refused(raw):
 
 def test_plain_header_values_pass():
     check_header_values(headers({"Host": "a.example.com", "Accept": "text/html", "Cookie": "a=1; b=2"}))
+
+
+def test_client_headers_drop_the_cdn_cache_headers_cloudflare_honours_ahead_of_cache_control():
+    sent = [("CDN-Cache-Control", "public, max-age=86400"), ("cloudflare-cdn-cache-control", "max-age=60"), ("Surrogate-Control", "max-age=60"), ("Content-Type", "text/plain")]
+    assert client_headers(sent) == [("Content-Type", "text/plain"), ("Cache-Control", "private")]

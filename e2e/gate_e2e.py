@@ -75,6 +75,8 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         if self.path.startswith("/cacheable"):
             self.send_header("Cache-Control", "public, max-age=600")
+            for name in ("CDN-Cache-Control", "Cloudflare-CDN-Cache-Control", "Surrogate-Control"):
+                self.send_header(name, "public, max-age=86400")
         self.end_headers()
         self.wfile.write(body)
 
@@ -121,7 +123,7 @@ class Stack:
         global_options = "\tadmin off\n\tlocal_certs\n\tskip_install_trust\n" + ("\tauto_https disable_redirects\n" if self.tls else "\tauto_https off\n")
         (d / "Caddyfile").write_text(
             f"{{\n{global_options}}}\n\n"
-            f"(tailisman_gate) {{\n\theader ?Cache-Control \"private\"\n\theader >Cache-Control \"public\" \"private\"\n\troute {{\n\t\treverse_proxy /.tailisman/* 127.0.0.1:{p['gate']}\n\t\tforward_auth 127.0.0.1:{p['gate']} {{\n\t\t\turi /.tailisman/verify\n\t\t\tcopy_headers X-Tailisman-Session X-Tailisman-User\n\t\t}}\n\t}}\n}}\n\n"
+            f"(tailisman_gate) {{\n\theader ?Cache-Control \"private\"\n\theader >Cache-Control \"public\" \"private\"\n\theader -CDN-Cache-Control\n\theader -Cloudflare-CDN-Cache-Control\n\theader -Surrogate-Control\n\troute {{\n\t\treverse_proxy /.tailisman/* 127.0.0.1:{p['gate']}\n\t\tforward_auth 127.0.0.1:{p['gate']} {{\n\t\t\turi /.tailisman/verify\n\t\t\tcopy_headers X-Tailisman-Session X-Tailisman-User\n\t\t}}\n\t}}\n}}\n\n"
             + "".join(f"{scheme}://{host}:{p['caddy']} {{\n\timport tailisman_gate\n\treverse_proxy 127.0.0.1:{p['upstream']}\n}}\n\n" for host in (TOOLS, NOTES, SOLO))
         )
         upstream = http.server.ThreadingHTTPServer(("127.0.0.1", p["upstream"]), Upstream)
@@ -272,6 +274,8 @@ def run(stack: Stack) -> int:
     c.check("a gated answer with no Cache-Control is marked private", r.header("Cache-Control") == "private", r.header("Cache-Control"))
     r = get("/cacheable.js", cookie=password_cookie)
     c.check("a gated answer the app marked public is marked private", r.header("Cache-Control") == "private, max-age=600", r.header("Cache-Control"))
+    cdn = {name: r.header(name) for name in ("CDN-Cache-Control", "Cloudflare-CDN-Cache-Control", "Surrogate-Control")}
+    c.check("the app's CDN-Cache-Control, Cloudflare-CDN-Cache-Control and Surrogate-Control are removed", set(cdn.values()) == {None}, cdn)
     r = get("/", host=SOLO)
     solo_csrf = r.status == 302 and get("/.tailisman/login", host=SOLO).cookie("tailisman_csrf")
     body = urlencode({"csrf": solo_csrf, "password": passphrase, "next": "/"}).encode()
