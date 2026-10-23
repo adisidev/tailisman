@@ -56,6 +56,9 @@ caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 (tailisman_gate) {
 	header ?Cache-Control "private"
 	header >Cache-Control "public" "private"
+	header -CDN-Cache-Control
+	header -Cloudflare-CDN-Cache-Control
+	header -Surrogate-Control
 	route {
 		reverse_proxy /.tailisman/* 127.0.0.1:8471
 		forward_auth 127.0.0.1:8471 {
@@ -158,6 +161,9 @@ server {
 		proxy_set_header X-Tailisman-Session $tailisman_session;
 		proxy_set_header X-Tailisman-User $tailisman_user;
 		proxy_hide_header Cache-Control;
+		proxy_hide_header CDN-Cache-Control;
+		proxy_hide_header Cloudflare-CDN-Cache-Control;
+		proxy_hide_header Surrogate-Control;
 		add_header Cache-Control $tailisman_cache_control always;
 		proxy_pass http://127.0.0.1:9000;
 	}
