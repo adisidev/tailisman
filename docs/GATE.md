@@ -195,7 +195,7 @@ The gate only reads files, so `ProtectSystem=strict` costs it nothing. Run `tail
 - Changing the password signs everyone out, tailnet sessions included.
 - A request that skips Cloudflare can choose its own `CF-Connecting-IP`. The global rate limit is the backstop.
 - If the site's own `header` directive sets a `Content-Security-Policy`, scope it with `not path /.tailisman/*`, or the silent tailnet path is blocked.
-- Open rules are the app's responsibility. The gate refuses to match one against a path with a `..` segment, an encoded `.`, `/` or `\`, or a backslash, but whatever an open rule lets through reaches the app with no session.
+- Open rules are the app's responsibility. The gate refuses to match one against a path with a `..` segment, an empty segment (`//`, which also keeps a leading `//x` from being read as a host), a `;`, an encoded `.`, `/` or `\`, or a backslash, but whatever an open rule lets through reaches the app with no session.
 - Rate limits, the issuer token replay store and the scrypt lock live in one process. Run one gate per host.
 
 ## Testing

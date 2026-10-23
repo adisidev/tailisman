@@ -155,11 +155,12 @@ def parse_open_rule(text: object) -> OpenRule:
 
 
 def is_plain_path(path: str) -> bool:
-    """False for anything an upstream might normalise into another path: .. segments, %2e, %2f, %5c, backslashes."""
+    """False for anything an upstream might normalise into another path: .. segments, empty segments (//), ;params, %2e, %2f, %5c, backslashes."""
     lowered = path.lower()
-    if "\\" in path or any(code in lowered for code in ("%2e", "%2f", "%5c")):
+    if "\\" in path or ";" in path or any(code in lowered for code in ("%2e", "%2f", "%5c")):
         return False
-    return ".." not in path.split("/")
+    segments = path.split("/")[1:]
+    return ".." not in segments and "" not in segments[:-1]
 
 
 def _site(entry: object, issuer: str | None, clock: Callable[[], float]) -> Site:

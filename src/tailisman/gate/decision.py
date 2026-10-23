@@ -42,7 +42,7 @@ class GateRequest:
 
     @property
     def path(self) -> str:
-        return urlsplit(self.uri).path
+        return self.uri.split("?", 1)[0]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -84,7 +84,7 @@ def is_open(site: Site, method: str, path: str) -> bool:
 
 def safe_next(text: str | None) -> str:
     """A same-host path to return to after sign-in; anything else becomes /, including the login page, which would loop."""
-    if not text or not text.startswith("/") or text.startswith("//") or "\\" in text or any(ord(c) < 0x21 for c in text):
+    if not text or not text.isascii() or not text.startswith("/") or text.startswith("//") or "\\" in text or any(ord(c) < 0x21 for c in text):
         return "/"
     parts = urlsplit(text)
     return text if not parts.scheme and not parts.netloc and parts.path != LOGIN_PATH else "/"

@@ -241,6 +241,10 @@ def site(app, host=TOOLS):
         ("GET", "/api/x%2Fy", False),
         ("GET", "/api/x%5cy", False),
         ("GET", "/api\\..\\secret", False),
+        ("GET", "//x/api/secret", False),
+        ("GET", "/api//x", False),
+        ("GET", "/api/..;/secret", False),
+        ("GET", "/api/x;y", False),
     ],
 )
 def test_open_rules_match_exact_prefix_and_method_and_refuse_traversal(gate, method, path, expected):
@@ -261,6 +265,7 @@ def test_open_rules_match_exact_prefix_and_method_and_refuse_traversal(gate, met
         ("javascript:alert(1)", "/"),
         ("/\tevil", "/"),
         ("/.tailisman/login?next=/x", "/"),
+        ("/\u4e2d", "/"),
     ],
 )
 def test_next_is_only_ever_a_same_host_path(text, expected):
@@ -314,6 +319,11 @@ def test_anonymous_api_call_gets_401(gate):
     response = verify_request(gate, uri="/data", accept="application/json")
     assert response.status == 401 and json.loads(response.body) == {"error": "sign_in_required"}
     assert verify_request(gate, uri="/data", method="POST").status == 401
+
+
+def test_a_leading_double_slash_is_not_read_as_a_host(gate):
+    request = GateRequest(host=TOOLS, method="GET", uri="//x/api/secret?q=1", cookies=(), accepts_html=False)
+    assert decide(request, gate.config, lambda *_: None, 0) == Unauthorised("sign_in_required")
 
 
 def test_open_rule_lets_an_anonymous_request_through_but_not_a_traversal(gate):
