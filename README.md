@@ -224,6 +224,7 @@ These come from one live run on a real tailnet on 23 October 2026, with Tailscal
 - A request that sent its own `X-Forwarded-For` and `Tailscale-User-Login` headers was still identified as the device it really came from. `tailscale serve` replaces both headers before the issuer sees them.
 - An unknown `Origin` got a 403 with no CORS headers, so a browser on another site cannot read the answer.
 - From a server that is not on the tailnet, the issuer's name did not resolve (`curl` exit 6), and connecting to its tailnet IP directly timed out (`curl` exit 28). Public DNS has no record for the name.
+- After the DNS rebinding fix, a second live run checked both sides. A request through serve from an allowlisted Mac still got a token, and a request sent straight to the loopback listener with a forged `X-Forwarded-For` and a foreign `Host` got `421 wrong_host`.
 
 ### Browser matrix
 
