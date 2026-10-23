@@ -238,7 +238,7 @@ def test_status_page_for_a_device_no_site_accepts_shows_only_its_identity(issuer
     page = body.decode()
     assert response.status == 200
     assert "tablet" in page and "nEXAMPLE3CNTRL" in page
-    assert html.escape('devices = ["nEXAMPLE3CNTRL"]  # tablet') in page
+    assert html.escape('devices = ["nEXAMPLE3CNTRL"]  # tablet') in page and "<code>devices</code> in issuer.toml" in page
     assert "example.com" not in page.replace("owner@example.com", "") and "localhost" not in page
 
 

@@ -117,7 +117,7 @@ class GateApp:
         """The tailnet listener: the issuer's checks and CORS, answering a one-time code for this process instead of a signed token."""
         assert self.config.tailnet is not None
         checks = self.config.tailnet.checks
-        return IssuerApp(checks, whois, checks.serve_host, self.clock, issue=self._issue_code)
+        return IssuerApp(checks, whois, checks.serve_host, self.clock, issue=self._issue_code, devices_at=("[tailnet] devices", "gate.toml"))
 
     def _issue_code(self, grant: Grant, now: int) -> str:
         return self.codes.issue(grant.audience.origin, Device(grant.peer.node_id, grant.peer.node_name, grant.peer.login), now)

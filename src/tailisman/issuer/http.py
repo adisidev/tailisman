@@ -38,9 +38,10 @@ class Response:
 
 
 class IssuerApp:
-    def __init__(self, config: IssuerConfig, whois: Whois, serve_host: str, clock: Callable[[], float] = time.time, issue: Issue | None = None) -> None:
-        """`issue` turns a grant into what the browser carries back; a signed token by default, the gate's one-time code in the gate."""
+    def __init__(self, config: IssuerConfig, whois: Whois, serve_host: str, clock: Callable[[], float] = time.time, issue: Issue | None = None, devices_at: tuple[str, str] = ("devices", "issuer.toml")) -> None:
+        """`issue` turns a grant into what the browser carries back; a signed token by default, the gate's one-time code in the gate. `devices_at` is the setting and file the status page tells an unlisted device to be added to."""
         self.config = config
+        self.devices_at = devices_at
         self.whois = whois
         self.serve_host = serve_host
         self.clock = clock
@@ -121,7 +122,8 @@ class IssuerApp:
             parts.append("<p>Tagged devices are always refused, because they have no user identity.</p>")
         elif not allowed or any(isinstance(v, Refusal) and v.code is RefusalCode.NOT_ON_ALLOWLIST for v in verdicts.values()):
             line = f"devices = [{json.dumps(peer.node_id)}]  # {peer.node_name}"
-            parts.append(f"<p>To allow this device, add its stable ID to <code>devices</code> in issuer.toml:</p><pre>{html.escape(line)}</pre>")
+            setting, file = (html.escape(part) for part in self.devices_at)
+            parts.append(f"<p>To allow this device, add its stable ID to <code>{setting}</code> in {file}:</p><pre>{html.escape(line)}</pre>")
         return _html(200, "".join(parts), PAGE_CSP)
 
 

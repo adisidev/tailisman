@@ -92,3 +92,11 @@ def test_status_flags_a_tailnet_listener_that_is_down_unserved_funnelled_or_misn
         if listener:
             listener.close()
     assert problem in capsys.readouterr().out.splitlines()[0]
+
+
+def test_the_tailnet_status_page_points_an_unlisted_device_at_gate_toml(running):
+    (_, tailnet), _ = running
+    serve = {"Host": f"{SERVE_HOST}:8443", "X-Forwarded-Host": f"{SERVE_HOST}:8443", "X-Forwarded-For": "192.0.2.2", "X-Forwarded-Proto": "https", "Tailscale-User-Login": "owner@example.com"}
+    status, body = ask(tailnet.server_address[:2], "GET", "/", serve)
+    page = body.decode()
+    assert status == 200 and "<code>[tailnet] devices</code> in gate.toml" in page and "issuer.toml" not in page
