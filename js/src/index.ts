@@ -31,7 +31,6 @@ export class Verifier {
     this.#clock = opts.clock ?? (() => Date.now() / 1000);
   }
 
-  /** Checks, in order: format and MAC, audience, time window, single use, then the optional device list. */
   verify(token: string): Claim {
     const claim = decode(token, this.#key);
     if (claim.audience !== this.#audience) throw new TailismanError("wrong_audience", `token is for ${claim.audience}`);
@@ -46,7 +45,6 @@ export class Verifier {
   }
 }
 
-/** The token from either body the snippet sends: JSON {"token": ...} from the silent path, a form field from the navigation path. */
 export function extractToken(contentType: string | undefined | null, body: string | Uint8Array): string {
   const mediaType = (contentType ?? "").split(";")[0]!.trim().toLowerCase();
   let token: unknown = null;

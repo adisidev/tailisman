@@ -109,7 +109,6 @@ def sign(payload_json: str, key: bytes) -> str:
 
 
 def decode(token: str, key: bytes) -> Claim:
-    """MAC first, payload second. No clock and no audience; Verifier.verify owns those."""
     parts = token.split(".")
     if len(parts) != 3 or parts[0] != TOKEN_PREFIX:
         raise TailismanError(ErrorCode.MALFORMED, "a token looks like tsm1.<payload>.<mac>")

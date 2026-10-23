@@ -202,7 +202,6 @@ class _ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStr
 
 
 def make_server(app: IssuerApp) -> socketserver.BaseServer:
-    """Binds the configured listener. Loopback TCP, or a unix socket at mode 0660 that replaces a stale socket from a previous run."""
     listen = app.config.listen
     handler = handler_for(app)
     if isinstance(listen, TcpListen):

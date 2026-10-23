@@ -90,7 +90,6 @@ class PeerIdentity:
         return cls(stable_id, computed, name.rstrip("."), login, tuple(str(t) for t in tags))
 
     def matches(self, entry: str) -> bool:
-        """An allowlist entry names a node by stable ID (exact), short name, or MagicDNS name with or without the trailing dot."""
         name = entry.rstrip(".").lower()
         return entry == self.node_id or name == self.node_name.lower() or name == self.dns_name.lower()
 

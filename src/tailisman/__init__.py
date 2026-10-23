@@ -36,7 +36,6 @@ class Verifier:
         self._clock = clock
 
     def verify(self, token: str) -> Claim:
-        """Checks, in order: format and MAC, audience, time window, single use, then the optional device list."""
         claim = decode(token, self._key)
         if claim.audience != self._audience:
             raise TailismanError(ErrorCode.WRONG_AUDIENCE, f"token is for {claim.audience}")
@@ -53,7 +52,6 @@ class Verifier:
 
 
 def extract_token(content_type: str | None, body: bytes) -> str:
-    """The token from either body the snippet sends: JSON {"token": ...} from the silent path, a form field from the navigation path."""
     media_type = (content_type or "").split(";")[0].strip().lower()
     try:
         if media_type == "application/json":
