@@ -128,6 +128,10 @@ def verify_request(app, host=TOOLS, uri="/", cookie=None, accept="text/html", me
 # Sessions
 
 
+def owner(key):
+    return lambda guest: key if guest is None else None
+
+
 def session(now=1000, scope="example.com", method=Method.PASSWORD, device=None, days=30):
     return Session(method, device, scope, now, now + days * 86400)
 
@@ -136,14 +140,14 @@ def test_session_round_trips_and_covers_hosts_under_its_scope():
     key = session_key(SECRET, "scrypt$line")
     value = mint(session(device="laptop", method=Method.TAILNET), key)
     assert value.startswith("tsg1.")
-    assert verify(value, key, "tools.example.com", 2000) == session(device="laptop", method=Method.TAILNET)
-    assert verify(value, key, "example.com", 2000) is not None
+    assert verify(value, owner(key), "tools.example.com", 2000) == session(device="laptop", method=Method.TAILNET)
+    assert verify(value, owner(key), "example.com", 2000) is not None
 
 
 @pytest.mark.parametrize("host", ["example.net", "badexample.com", "example.com.evil.net"])
 def test_session_is_refused_for_a_host_outside_its_scope(host):
     key = session_key(SECRET, "line")
-    assert verify(mint(session(), key), key, host, 2000) is None
+    assert verify(mint(session(), key), owner(key), host, 2000) is None
 
 
 def test_session_is_refused_when_tampered_expired_or_signed_under_another_password():
@@ -151,13 +155,13 @@ def test_session_is_refused_when_tampered_expired_or_signed_under_another_passwo
     value = mint(session(now=1000, days=1), key)
     prefix, payload, mac = value.split(".")
     forged = mint(Session(Method.PASSWORD, None, "com", 1000, 10**9), key).split(".")[1]
-    assert verify(f"{prefix}.{forged}.{mac}", key, TOOLS, 2000) is None
-    assert verify(f"{prefix}.{payload}.{mac[:-1]}A", key, TOOLS, 2000) is None
-    assert verify(f"{prefix}.{payload}=.{mac}", key, TOOLS, 2000) is None
-    assert verify(value, key, TOOLS, 1000 + 86400) is None
-    assert verify(value, key, TOOLS, 999) is None
-    assert verify(value, session_key(SECRET, "another line"), TOOLS, 2000) is None
-    assert verify(value, session_key(bytes(32), "line"), TOOLS, 2000) is None
+    assert verify(f"{prefix}.{forged}.{mac}", owner(key), TOOLS, 2000) is None
+    assert verify(f"{prefix}.{payload}.{mac[:-1]}A", owner(key), TOOLS, 2000) is None
+    assert verify(f"{prefix}.{payload}=.{mac}", owner(key), TOOLS, 2000) is None
+    assert verify(value, owner(key), TOOLS, 1000 + 86400) is None
+    assert verify(value, owner(key), TOOLS, 999) is None
+    assert verify(value, owner(session_key(SECRET, "another line")), TOOLS, 2000) is None
+    assert verify(value, owner(session_key(bytes(32), "line")), TOOLS, 2000) is None
 
 
 def test_session_payload_must_be_exactly_the_expected_shape():
@@ -170,7 +174,7 @@ def test_session_payload_must_be_exactly_the_expected_shape():
         return f"{signing_input}.{module.b64encode(module._mac(key, signing_input))}"
 
     good = {"m": "password", "dev": None, "scope": "example.com", "iat": 1000, "exp": 5000}
-    assert verify(signed(good), key, TOOLS, 2000) is not None
+    assert verify(signed(good), owner(key), TOOLS, 2000) is not None
     for bad in [
         good | {"extra": 1},
         {k: v for k, v in good.items() if k != "dev"},
@@ -180,13 +184,13 @@ def test_session_payload_must_be_exactly_the_expected_shape():
         good | {"exp": 5000.5},
         good | {"scope": ""},
     ]:
-        assert verify(signed(bad), key, TOOLS, 2000) is None, bad
+        assert verify(signed(bad), owner(key), TOOLS, 2000) is None, bad
 
 
 def test_any_of_several_cookies_with_the_same_name_may_be_the_valid_one():
     key = session_key(SECRET, "line")
-    assert first_valid(("junk", mint(session(), key)), key, TOOLS, 2000) == session()
-    assert first_valid(("junk", "tsg1.a.b"), key, TOOLS, 2000) is None
+    assert first_valid(("junk", mint(session(), key)), owner(key), TOOLS, 2000) == session()
+    assert first_valid(("junk", "tsg1.a.b"), owner(key), TOOLS, 2000) is None
 
 
 # Passwords

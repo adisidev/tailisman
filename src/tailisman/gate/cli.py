@@ -14,9 +14,12 @@ from ..issuer.config import ConfigError
 from .config import GateConfig, Site, load_config, site_key
 from .decision import LOGIN_PATH
 from .http import GateApp, make_server
+from .credentials import Credentials, Guest, guest_digest, parse_guest_line, parse_guests
 from .password import generate_passphrase, hash_password, write_private
+from .session import GUEST_NAME
 
 MIN_PASSWORD = 12
+GUESTS_DIR = "guests"
 
 
 def add_commands(commands: argparse._SubParsersAction) -> dict[str, Callable[[argparse.Namespace], int]]:
@@ -27,11 +30,16 @@ def add_commands(commands: argparse._SubParsersAction) -> dict[str, Callable[[ar
     status = gate_commands.add_parser("status", help="list the gated sites and check each one refuses an anonymous visitor")
     status.add_argument("--config", required=True)
     status.add_argument("--base-url-for", action="append", default=[], metavar="HOST=URL", help="send HOST's checks to URL instead of https://HOST, with HOST as the Host header")
-    passwd = commands.add_parser("passwd", help="set the gate's backup password; it takes effect without a restart and signs every session out")
+    passwd = commands.add_parser("passwd", help="set the gate's backup password, or add, revoke and list guest passwords; changes take effect without a restart")
     passwd.add_argument("--config", required=True)
-    passwd.add_argument("--generate", action="store_true", help="make a passphrase instead of prompting, and write it to --out")
+    action = passwd.add_mutually_exclusive_group()
+    action.add_argument("--generate", action="store_true", help="make the owner passphrase instead of prompting, and write it to --out")
+    action.add_argument("--add", metavar="NAME", help="give guest NAME a generated passphrase for --sites, written to guests/NAME next to the config")
+    action.add_argument("--revoke", metavar="NAME", help="remove guest NAME; their sessions end at once")
+    action.add_argument("--list", action="store_true", help="list guests and their sites")
     passwd.add_argument("--out", help="where --generate writes the passphrase, mode 0600")
-    passwd.add_argument("--force", action="store_true", help="let --generate overwrite an existing --out file")
+    passwd.add_argument("--sites", help="with --add: comma-separated [[sites]] hosts the guest may sign in to")
+    passwd.add_argument("--force", action="store_true", help="let --generate overwrite --out, or --add replace an existing guest's password")
     return {"gate": lambda args: {"run": _run, "status": _status}[args.gate_command](args), "passwd": _passwd}
 
 
@@ -39,7 +47,7 @@ def _run(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     app = GateApp(config)
     server = make_server(app)
-    password = "on" if app.password.current() else f"off (no valid hash in {config.password_file}; run `tailisman passwd`)"
+    password = "on" if app.credentials.owner.current() else f"off (no valid hash in {config.password_file}; run `tailisman passwd`)"
     print(f"tailisman gate: listening on {config.listen.serve_target()} for {', '.join(config.sites)}; password {password}", file=sys.stderr)
     try:
         server.serve_forever()
@@ -52,6 +60,14 @@ def _run(args: argparse.Namespace) -> int:
 
 def _passwd(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    if args.sites is not None and args.add is None:
+        raise ConfigError("--sites goes with --add NAME")
+    if args.add is not None:
+        return _add_guest(config, Path(args.config).parent / GUESTS_DIR, args.add, args.sites, args.force)
+    if args.revoke is not None:
+        return _revoke_guest(config, Path(args.config).parent / GUESTS_DIR, args.revoke)
+    if args.list:
+        return _list_guests(config)
     if args.generate:
         if not args.out:
             raise ConfigError("--generate needs --out PATH for the passphrase")
@@ -75,16 +91,103 @@ def _passwd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_guest(config: GateConfig, directory: Path, name: str, sites_text: str | None, force: bool) -> int:
+    if not GUEST_NAME.fullmatch(name):
+        raise ConfigError(f"guest name {name!r} must be 1 to 32 of a-z, 0-9, _ and -, starting with a letter or digit")
+    sites = _guest_sites(config, sites_text)
+    records = _guest_records(config)
+    if name in records and not force:
+        print(f"tailisman: guest {name} already exists; pass --force to replace their password, which signs them out", file=sys.stderr)
+        return 1
+    passphrase = generate_passphrase()
+    directory.mkdir(mode=0o700, exist_ok=True)
+    directory.chmod(0o700)
+    try:
+        write_private(directory / name, passphrase + "\n", overwrite=force)
+    except FileExistsError:
+        print(f"tailisman: {directory / name} already exists; pass --force to overwrite it", file=sys.stderr)
+        return 1
+    records[name] = Guest(name, sites, guest_digest(passphrase)).line()
+    _write_guests(config, records)
+    print(f"guest {name} may sign in to {', '.join(sites)}")
+    print(f"wrote the passphrase to {directory / name}; hand it over, then delete the file")
+    print(f"wrote the guest record to {config.guest_file}")
+    return 0
+
+
+def _revoke_guest(config: GateConfig, directory: Path, name: str) -> int:
+    records = _guest_records(config)
+    plaintext = directory / name if GUEST_NAME.fullmatch(name) else None
+    if name not in records and not (plaintext and plaintext.exists()):
+        known = ", ".join(sorted(records)) or "none"
+        print(f"tailisman: no guest named {name!r} (guests: {known})", file=sys.stderr)
+        return 1
+    if name in records:
+        del records[name]
+        _write_guests(config, records)
+        print(f"revoked guest {name}; their sessions have ended")
+    if plaintext is not None and plaintext.exists():
+        plaintext.unlink()
+        print(f"deleted {plaintext}")
+    return 0
+
+
+def _list_guests(config: GateConfig) -> int:
+    guests = parse_guests(_read_guest_file(config), config.guest_file).by_name
+    for guest in guests.values():
+        print(f"{guest.name}: {', '.join(guest.sites)}")
+    if not guests:
+        print(f"no guests in {config.guest_file}")
+    return 0
+
+
+def _guest_sites(config: GateConfig, text: str | None) -> tuple[str, ...]:
+    """A guest is only ever given the sites named here; there is no default of every site."""
+    configured = ", ".join(config.sites)
+    if not text or not text.strip():
+        raise ConfigError(f"--add needs --sites HOST[,HOST...]; this gate's sites are {configured}")
+    sites = []
+    for host in text.split(","):
+        key = site_key(host)
+        if key not in config.sites:
+            raise ConfigError(f"--sites {host.strip()!r} is not a [[sites]] host of this gate; its sites are {configured}")
+        if key not in sites:
+            sites.append(key)
+    return tuple(sites)
+
+
+def _read_guest_file(config: GateConfig) -> str:
+    try:
+        return config.guest_file.read_text()
+    except FileNotFoundError:
+        return ""
+
+
+def _guest_records(config: GateConfig) -> dict[str, str]:
+    """Each record line by guest name, malformed lines kept under a key no name can take, so a rewrite never drops them."""
+    records: dict[str, str] = {}
+    for number, line in enumerate(_read_guest_file(config).splitlines()):
+        guest = parse_guest_line(line)
+        records[guest.name if guest and guest.name not in records else f" {number}"] = line
+    return records
+
+
+def _write_guests(config: GateConfig, records: dict[str, str]) -> None:
+    write_private(config.guest_file, "".join(line + "\n" for line in records.values()), overwrite=True)
+
+
 def _status(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     bases = _base_urls(args.base_url_for, config)
+    credentials = Credentials(config.session_secret, config.password_file, config.guest_file)
     failed = False
     for site in config.sites.values():
         problems = _probe(site, bases.get(site.host, f"https://{site.host}"))
         failed = failed or bool(problems)
         tailnet = "on" if config.issuer and site.verifier else "off"
         rules = ", ".join(str(rule) for rule in site.open) or "none"
-        print(f"{site.host}: scope {site.scope}, tailnet {tailnet}, open {rules}: {'; '.join(problems) or 'ok'}")
+        guests = credentials.guest_count(site.host)
+        print(f"{site.host}: scope {site.scope}, tailnet {tailnet}, guests {guests}, open {rules}: {'; '.join(problems) or 'ok'}")
     return 1 if failed else 0
 
 

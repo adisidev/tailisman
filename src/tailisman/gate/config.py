@@ -59,6 +59,7 @@ class GateConfig:
     listen: TcpListen
     session_secret: bytes
     password_file: Path
+    guest_file: Path
     session_days: int
     issuer: str | None
     issuer_address_space: str
@@ -66,7 +67,7 @@ class GateConfig:
     sites: dict[str, Site]
 
 
-_TOP_KEYS = {"listen", "session_secret_file", "password_file", "session_days", "issuer", "issuer_address_space", "rate_limit", "sites"}
+_TOP_KEYS = {"listen", "session_secret_file", "password_file", "guest_file", "session_days", "issuer", "issuer_address_space", "rate_limit", "sites"}
 _RATE_KEYS = {"per_ip", "global", "window_seconds"}
 _SITE_KEYS = {"host", "cookie_domain", "tailisman_key", "open"}
 _HOST = re.compile(r"([a-z0-9-]+(?:\.[a-z0-9-]+)+|localhost)\.?(?::([0-9]{1,5}))?", re.ASCII | re.IGNORECASE)
@@ -136,6 +137,7 @@ def parse_config(raw: dict, base: Path = Path("."), clock: Callable[[], float] =
         listen=listen,
         session_secret=secret,
         password_file=base / _required_str(raw, "password_file"),
+        guest_file=base / _optional_str(raw, "guest_file", "guest-passwords"),
         session_days=days,
         issuer=issuer,
         issuer_address_space=space,
@@ -208,6 +210,10 @@ def _required_str(table: dict, key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ConfigError(f"{key} is required")
     return value
+
+
+def _optional_str(table: dict, key: str, default: str) -> str:
+    return _required_str(table, key) if key in table else default
 
 
 def _no_unknown_keys(table: dict, allowed: set[str], where: str) -> None:

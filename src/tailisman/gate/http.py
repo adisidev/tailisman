@@ -24,12 +24,13 @@ from ..issuer.config import ConfigError
 from ..issuer.http import Response
 from .config import GateConfig, Site, host_without_port, site_key
 from .decision import LOGIN_PATH, Allow, GateRequest, SignIn, decide, safe_next
-from .password import PasswordFile, PasswordHash
+from .credentials import Credentials
 from .ratelimit import RateLimiter
-from .session import COOKIE, Method, Session, cookie_values, first_valid, mint, session_key
+from .session import COOKIE, Method, Session, cookie_values, mint
 
 CSRF_COOKIE = "tailisman_csrf"
 SESSION_HEADER = "X-Tailisman-Session"
+USER_HEADER = "X-Tailisman-User"
 STATIC = Path(__file__).with_name("static")
 _CSRF = re.compile(r"[A-Za-z0-9_-]{32}")
 Headers = tuple[tuple[str, str], ...]
@@ -66,7 +67,7 @@ class GateApp:
     def __init__(self, config: GateConfig, clock: Callable[[], float] = time.time) -> None:
         self.config = config
         self.clock = clock
-        self.password = PasswordFile(config.password_file)
+        self.credentials = Credentials(config.session_secret, config.password_file, config.guest_file)
         self.limiter = RateLimiter(config.rate_limit)
         self._password_lock = threading.Lock()
         try:
@@ -109,24 +110,16 @@ class GateApp:
     def now(self) -> int:
         return int(self.clock())
 
-    def session_key(self) -> bytes:
-        current = self.password.current()
-        return session_key(self.config.session_secret, current.line if current else "")
-
-    def session_for(self, cookies: tuple[str, ...], host: str, now: int) -> Session | None:
-        return first_valid(cookies, self.session_key(), host, now)
-
     def _verify(self, headers: Message) -> Response:
-        decision = decide(GateRequest.from_forward_auth(headers), self.config, self.session_for, self.now())
+        decision = decide(GateRequest.from_forward_auth(headers), self.config, self.credentials.session_for, self.now())
         if isinstance(decision, Allow):
-            extra = ((SESSION_HEADER, decision.session.method.value),) if decision.session else ()
-            return Response(200, (("Cache-Control", "no-store"),) + extra, b"")
+            return Response(200, (("Cache-Control", "no-store"),) + session_headers(decision.session), b"")
         if isinstance(decision, SignIn):
             return Response(302, (("Location", decision.login_url), ("Cache-Control", "no-store")), b"")
         return _json(401, {"error": decision.reason})
 
     def _current_session(self, request: Incoming, site: Site) -> Session | None:
-        return self.session_for(cookie_values(request.headers.get("Cookie"), COOKIE), host_without_port(site.host), self.now())
+        return self.credentials.session_for(cookie_values(request.headers.get("Cookie"), COOKIE), site.host, self.now())
 
     def _login_page(self, request: Incoming, site: Site) -> tuple[Response, str | None]:
         next_path = safe_next(request.single("next"))
@@ -137,7 +130,7 @@ class GateApp:
     def _render_login(self, request: Incoming, site: Site, next_path: str, status: int, message: str | None, extra: Headers = (), signed_out: bool = False) -> Response:
         """After sign-out the tailnet path waits for a click; signing straight back in would make Sign out do nothing on a tailnet device."""
         csrf = _csrf_from(request) or secrets.token_urlsafe(24)
-        password = self.password.current()
+        password = self.credentials.owner.current() is not None or self.credentials.guest_count(site.host) > 0
         tailnet = self._tailnet_on(site)
         parts = [f'<p class=site>{html.escape(host_without_port(site.host))}</p><h1>Sign in</h1>']
         if message:
@@ -150,7 +143,7 @@ class GateApp:
                 '<p id=tailnet-status role=status aria-live=polite></p>'
                 '<button type=button id=tailnet-signin class=secondary hidden>Sign in from this device</button></section>'
             )
-        if password is not None:
+        if password:
             parts.append(
                 '<form method=post action="/.tailisman/login">'
                 f'<input type=hidden name=csrf value="{csrf}"><input type=hidden name=next value="{html.escape(next_path)}">'
@@ -176,13 +169,14 @@ class GateApp:
                 return self._render_login(request, site, next_path, 429, message, (("Retry-After", str(wait)),)), f"login refused for {site.host}: rate limited, {ip}"
             if not self._csrf_ok(request, site, form):
                 return self._render_login(request, site, next_path, 403, "This form had expired. Try again."), f"login refused for {site.host}: csrf, {ip}"
-            current = self.password.current()
-            if not _password_matches(current, _one(form, "password")):
+            opened = self.credentials.opens(_one(form, "password"), site.host)
+            if opened is None:
                 self.limiter.record_failure(ip, now)
                 return self._render_login(request, site, next_path, 401, "That password did not work."), f"login refused for {site.host}: wrong password, {ip}"
-        session = self._new_session(site, Method.PASSWORD, None)
-        cookies = (self._session_cookie(site, session, current), _clear(CSRF_COOKIE, "/.tailisman/", None, "Strict"))
-        return _redirect(next_path, cookies), f"signed in to {site.host} with the password, {ip}"
+        session = self._new_session(site, opened.method, None, opened.guest)
+        cookies = (self._session_cookie(site, session, opened.key), _clear(CSRF_COOKIE, "/.tailisman/", None, "Strict"))
+        who = f"as guest {opened.guest}" if opened.guest else "with the password"
+        return _redirect(next_path, cookies), f"signed in to {site.host} {who}, {ip}"
 
     def _exchange(self, request: Incoming, site: Site) -> tuple[Response, str | None]:
         next_path = safe_next(request.single("next"))
@@ -198,7 +192,7 @@ class GateApp:
             body = f"<h1>Not signed in</h1><p>The tailnet sign-in was refused: <code>{html.escape(exc.code.value)}</code>.</p><p><a href=\"{LOGIN_PATH}?next={quote(next_path, safe='')}\">Back to sign in</a></p>"
             return _page(403, "Not signed in", body, self._csp(site)), log
         session = self._new_session(site, Method.TAILNET, claim.node_name)
-        cookie = (self._session_cookie(site, session, self.password.current()),)
+        cookie = (self._session_cookie(site, session, self.credentials.owner_key()),)
         log = f"signed in to {site.host} from {claim.node_name}"
         if wants_json:
             return _json(200, {"device": claim.node_name, "next": next_path}, cookie), log
@@ -211,7 +205,11 @@ class GateApp:
             body = f'<p class=site>{name}</p><h1>Not signed in</h1><p><a href="{LOGIN_PATH}">Sign in</a></p>'
             return _page(200, "Not signed in", body, self._csp(site)), None
         csrf = _csrf_from(request) or secrets.token_urlsafe(24)
-        how = "with the password" if session.method is Method.PASSWORD else f"from {html.escape(session.device or '')} on the tailnet"
+        how = {
+            Method.PASSWORD: "with the password",
+            Method.TAILNET: f"from {html.escape(session.device or '')} on the tailnet",
+            Method.GUEST: f"as {html.escape(session.guest or '')} (guest)",
+        }[session.method]
         until = time.strftime("%d %b %Y, %H:%M UTC", time.gmtime(session.expires_at))
         scope = "" if session.scope == host_without_port(site.host) else f" The sign-in covers every site under {html.escape(session.scope)}."
         body = (
@@ -247,18 +245,21 @@ class GateApp:
         except ValueError:
             return False
 
-    def _new_session(self, site: Site, method: Method, device: str | None) -> Session:
+    def _new_session(self, site: Site, method: Method, device: str | None, guest: str | None = None) -> Session:
         now = self.now()
-        return Session(method, device, site.scope, now, now + self.config.session_days * 86400)
+        return Session(method, device, site.scope, now, now + self.config.session_days * 86400, guest)
 
-    def _session_cookie(self, site: Site, session: Session, password: PasswordHash | None) -> tuple[str, str]:
-        value = mint(session, session_key(self.config.session_secret, password.line if password else ""))
+    def _session_cookie(self, site: Site, session: Session, key: bytes) -> tuple[str, str]:
+        value = mint(session, key)
         domain = f"; Domain={site.cookie_domain}" if site.cookie_domain else ""
         return ("Set-Cookie", f"{COOKIE}={value}; Max-Age={self.config.session_days * 86400}; Path=/{domain}; Secure; HttpOnly; SameSite=Lax")
 
 
-def _password_matches(current: PasswordHash | None, password: str | None) -> bool:
-    return current is not None and bool(password) and current.matches(password)
+def session_headers(session: Session | None) -> Headers:
+    """What the app behind is told about the visitor. The proxy strips client-sent copies; Caddy's copy_headers does the same."""
+    if session is None:
+        return ()
+    return ((SESSION_HEADER, session.method.value),) + (((USER_HEADER, session.guest),) if session.guest else ())
 
 
 def _csrf_from(request: Incoming) -> str | None:

@@ -33,6 +33,7 @@ from tailisman.gate.password import parse_hash  # noqa: E402
 from tailisman.gate.session import Method, Session, mint, session_key  # noqa: E402
 
 TOOLS = "tools.example.com"
+NOTES = "notes.example.com"
 SOLO = "solo.example.net"
 PEER = "192.0.2.1"
 WHOIS = {
@@ -65,7 +66,7 @@ def wait_for_port(port: int, process: subprocess.Popen | None, name: str, timeou
 
 class Upstream(http.server.BaseHTTPRequestHandler):
     def _answer(self) -> None:
-        body = json.dumps({"upstream": True, "path": self.path, "session": self.headers.get("X-Tailisman-Session")}).encode()
+        body = json.dumps({"upstream": True, "path": self.path, "session": self.headers.get("X-Tailisman-Session"), "user": self.headers.get("X-Tailisman-User")}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -92,7 +93,7 @@ class Stack:
         self.processes: list[subprocess.Popen] = []
         self.env = os.environ | {"FAKE_TAILSCALE_STATE": str(self.dir / "state.json"), "XDG_DATA_HOME": str(self.dir / "xdg-data"), "XDG_CONFIG_HOME": str(self.dir / "xdg-config"), "PYTHONPATH": str(ROOT / "src")}
         suffix = f":{self.ports['caddy']}" if tls else ""
-        self.tools, self.solo = TOOLS + suffix, SOLO + suffix
+        self.tools, self.notes, self.solo = TOOLS + suffix, NOTES + suffix, SOLO + suffix
         self.issuer_url = f"http://127.0.0.1:{self.ports['serve']}"
 
     def tailisman(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -113,6 +114,7 @@ class Stack:
             f'issuer = "{self.issuer_url}"\nissuer_address_space = "loopback"\n\n'
             "[rate_limit]\nper_ip = 3\nglobal = 6\nwindow_seconds = 900\n\n"
             f'[[sites]]\nhost = "{self.tools}"\ncookie_domain = "example.com"\ntailisman_key = "{key}"\nopen = ["/healthz", "/api/*", "POST /report"]\n\n'
+            f'[[sites]]\nhost = "{self.notes}"\ncookie_domain = "example.com"\n\n'
             f'[[sites]]\nhost = "{self.solo}"\n'
         )
         self.set_password(force=False)
@@ -120,8 +122,8 @@ class Stack:
         global_options = "\tadmin off\n\tlocal_certs\n\tskip_install_trust\n" + ("\tauto_https disable_redirects\n" if self.tls else "\tauto_https off\n")
         (d / "Caddyfile").write_text(
             f"{{\n{global_options}}}\n\n"
-            f"(tailisman_gate) {{\n\theader ?Cache-Control \"private\"\n\theader >Cache-Control \"public\" \"private\"\n\troute {{\n\t\treverse_proxy /.tailisman/* 127.0.0.1:{p['gate']}\n\t\tforward_auth 127.0.0.1:{p['gate']} {{\n\t\t\turi /.tailisman/verify\n\t\t}}\n\t}}\n}}\n\n"
-            + "".join(f"{scheme}://{host}:{p['caddy']} {{\n\timport tailisman_gate\n\treverse_proxy 127.0.0.1:{p['upstream']}\n}}\n\n" for host in (TOOLS, SOLO))
+            f"(tailisman_gate) {{\n\theader ?Cache-Control \"private\"\n\theader >Cache-Control \"public\" \"private\"\n\troute {{\n\t\treverse_proxy /.tailisman/* 127.0.0.1:{p['gate']}\n\t\tforward_auth 127.0.0.1:{p['gate']} {{\n\t\t\turi /.tailisman/verify\n\t\t\tcopy_headers X-Tailisman-Session X-Tailisman-User\n\t\t}}\n\t}}\n}}\n\n"
+            + "".join(f"{scheme}://{host}:{p['caddy']} {{\n\timport tailisman_gate\n\treverse_proxy 127.0.0.1:{p['upstream']}\n}}\n\n" for host in (TOOLS, NOTES, SOLO))
         )
         upstream = http.server.ThreadingHTTPServer(("127.0.0.1", p["upstream"]), Upstream)
         threading.Thread(target=upstream.serve_forever, daemon=True).start()
@@ -287,13 +289,35 @@ def run(stack: Stack) -> int:
     clears = [v for k, v in r.headers if k.lower() == "set-cookie" and v.startswith("tailisman_gate=;")]
     c.check("sign out answers 303 to the login page and clears the cookie", r.status == 303 and r.header("Location") == "/.tailisman/login?signed_out=1" and any("Max-Age=0" in v and "Domain=example.com" in v for v in clears), clears)
 
+    added = stack.tailisman("passwd", "--config", str(d / "gate.toml"), "--add", "visitor", "--sites", NOTES)
+    guest_phrase = (d / "guests" / "visitor").read_text().strip()
+    c.check("`passwd --add` writes the guest passphrase to a file and prints only paths", added.returncode == 0 and guest_phrase not in added.stdout + added.stderr and "guests/visitor" in added.stdout, added.stdout.strip().replace("\n", " | "))
+    page = get("/.tailisman/login", host=NOTES)
+    notes_csrf = page.cookie("tailisman_csrf")
+    form = {"Content-Type": "application/x-www-form-urlencoded", "Cookie": f"tailisman_csrf={notes_csrf}", "CF-Connecting-IP": "198.51.100.5"}
+    r = request(port, "POST", "/.tailisman/login", NOTES, form, urlencode({"csrf": notes_csrf, "password": guest_phrase, "next": "/"}).encode())
+    guest_cookie = r.cookie("tailisman_gate")
+    c.check("the guest signs in to their site with a Domain=example.com cookie", r.status == 303 and "Domain=example.com" in attributes(r, "tailisman_gate"), (r.status, attributes(r, "tailisman_gate")))
+    r = get("/", host=NOTES, cookie=guest_cookie)
+    c.check("the app behind sees X-Tailisman-Session guest and X-Tailisman-User visitor through copy_headers", reached_upstream(r) and (r.json()["session"], r.json()["user"]) == ("guest", "visitor"), r.body)
+    r = get("/", host=TOOLS, cookie=guest_cookie)
+    c.check("the guest's example.com cookie is refused on tools.example.com, which shares the domain", r.status == 302, r.status)
+    owner_cookie = login(passphrase, "198.51.100.6").cookie("tailisman_gate")
+    r = get("/", host=NOTES, cookie=owner_cookie, extra={"X-Tailisman-User": "visitor", "X-Tailisman-Session": "guest"})
+    c.check("an owner request's own X-Tailisman-User is removed and its X-Tailisman-Session replaced", reached_upstream(r) and (r.json()["session"], r.json()["user"]) == ("password", None), r.body)
+    r = request(port, "POST", "/.tailisman/login", TOOLS, form, urlencode({"csrf": notes_csrf, "password": guest_phrase, "next": "/"}).encode())
+    c.check("the guest password typed into tools.example.com's form is refused", r.status == 401 and r.cookie("tailisman_gate") is None, r.status)
+
     new_passphrase = stack.set_password()
+    c.check("after `tailisman passwd`, the guest session still works", reached_upstream(get("/", host=NOTES, cookie=guest_cookie)))
+    revoked = stack.tailisman("passwd", "--config", str(d / "gate.toml"), "--revoke", "visitor")
+    c.check("after `passwd --revoke`, the guest session is refused without a restart", revoked.returncode == 0 and get("/", host=NOTES, cookie=guest_cookie).status == 302 and not (d / "guests" / "visitor").exists(), revoked.stdout.strip())
     c.check("after `tailisman passwd`, an existing session cookie is refused", get("/notes", cookie=tailnet_cookie).status == 302)
     r = login(new_passphrase, "198.51.100.4")
     c.check("the new password signs in without a restart", r.status == 303 and reached_upstream(get("/notes", cookie=r.cookie("tailisman_gate"))), r.status)
 
-    status = stack.tailisman("gate", "status", "--config", str(d / "gate.toml"), "--base-url-for", f"{TOOLS}=http://127.0.0.1:{port}", "--base-url-for", f"{SOLO}=http://127.0.0.1:{port}", check=False)
-    c.check("`tailisman gate status --base-url-for` passes", status.returncode == 0 and status.stdout.count(": ok") == 2, status.stdout.strip().replace("\n", " | "))
+    status = stack.tailisman("gate", "status", "--config", str(d / "gate.toml"), "--base-url-for", f"{TOOLS}=http://127.0.0.1:{port}", "--base-url-for", f"{NOTES}=http://127.0.0.1:{port}", "--base-url-for", f"{SOLO}=http://127.0.0.1:{port}", check=False)
+    c.check("`tailisman gate status --base-url-for` passes", status.returncode == 0 and status.stdout.count(": ok") == 3, status.stdout.strip().replace("\n", " | "))
 
     for _ in range(3):
         login("wrong", "198.51.100.10")
@@ -306,7 +330,7 @@ def run(stack: Stack) -> int:
     r = login(new_passphrase, "198.51.100.13")
     c.check("the right password from a fresh IP gets 429 once the global limit (6 failures) is hit", r.status == 429, r.status)
     gate_log = (d / "gate.log").read_text()
-    c.check("the gate log names refusals and sign-ins without secrets", "wrong password" in gate_log and passphrase not in gate_log and new_passphrase not in gate_log, gate_log.count("\n"))
+    c.check("the gate log names refusals and sign-ins without secrets", "wrong password" in gate_log and "as guest visitor" in gate_log and all(p not in gate_log for p in (passphrase, new_passphrase, guest_phrase)), gate_log.count("\n"))
     print(f"{'all checks passed' if not c.failed else f'{c.failed} check(s) failed'}; logs in {d}" if stack.keep else ("all checks passed" if not c.failed else f"{c.failed} check(s) failed"))
     return 1 if c.failed else 0
 

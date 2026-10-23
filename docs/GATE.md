@@ -74,7 +74,7 @@ The two `header` lines keep gated pages out of shared caches. Without them Cloud
 
 The `route` block keeps the order: the gate's own pages first, then the check for everything else. The same snippet works when Caddy terminates TLS itself and when a Cloudflare Tunnel terminates TLS and talks plain HTTP to Caddy (`http://tools.example.com { ... }`). The gate sets its cookies `Secure` either way, because the browser is always on HTTPS.
 
-To pass the sign-in method on to the app, add `copy_headers X-Tailisman-Session` inside `forward_auth`. The app then sees `password` or `tailnet`. Measured on Caddy 2.11.7: a client that sends its own `X-Tailisman-Session` has it replaced by the gate's value, and removed when the gate allows the request without a session (an open rule).
+To pass the sign-in method on to the app, add `copy_headers X-Tailisman-Session X-Tailisman-User` inside `forward_auth`. The app then sees `password`, `tailnet` or `guest` in `X-Tailisman-Session`, and for a guest their name in `X-Tailisman-User`. Measured on Caddy 2.11.7: a client that sends its own copy of either header has it replaced by the gate's value, and removed when the gate's answer does not carry it (an open rule, or `X-Tailisman-User` on an owner session).
 
 If the site's own `header` directive sets a `Content-Security-Policy`, scope it with `not path /.tailisman/*`. The gate sends its own policy on its pages, and a site-wide one that lacks the issuer in `connect-src` blocks the silent tailnet path.
 
@@ -88,7 +88,8 @@ What Caddy 2.11.7 does here was measured with `e2e/gate_e2e.py`, not assumed. `f
 | --- | --- |
 | `listen` | Loopback address and port. Default `127.0.0.1:8471`. |
 | `session_secret_file` | 32 bytes from `tailisman keygen`. Relative paths resolve against the config file's directory. |
-| `password_file` | One scrypt hash line written by `tailisman passwd`. When it is missing or malformed the password path is off and the sign-in page says so. That is not a startup error. |
+| `password_file` | One scrypt hash line written by `tailisman passwd`. When it is missing or malformed the owner's password path is off. That is not a startup error. The sign-in page shows the password form while the owner password or a guest for that site exists, and otherwise says password sign-in is not set up. |
+| `guest_file` | Optional, default `guest-passwords` next to the config. The guest records written by `tailisman passwd --add`. A missing file means no guests. |
 | `session_days` | How long a session lasts, 1 to 400. Default 30. |
 | `issuer` | The issuer's origin. Without it only the password path exists. |
 | `rate_limit` | `per_ip` (default 5), `global` (default 30), `window_seconds` (default 900). |
@@ -107,9 +108,9 @@ All routes live under `/.tailisman/` on each gated host.
 
 | Route | What it does |
 | --- | --- |
-| `GET /.tailisman/verify` | The `forward_auth` target. 200 with an empty body to allow, plus `X-Tailisman-Session` when there is a session. 302 to the sign-in page for a page navigation (`GET` or `HEAD` that accepts `text/html`), 401 with a small JSON body otherwise. |
+| `GET /.tailisman/verify` | The `forward_auth` target. 200 with an empty body to allow, plus `X-Tailisman-Session` when there is a session and `X-Tailisman-User` for a guest. 302 to the sign-in page for a page navigation (`GET` or `HEAD` that accepts `text/html`), 401 with a small JSON body otherwise. |
 | `GET /.tailisman/login?next=` | The sign-in page. `next` must be a path on the same host. Anything else becomes `/`. A browser that already has a session goes straight to `next`. |
-| `POST /.tailisman/login` | Checks the rate limit, then CSRF, then the password. Success sets the session cookie and answers 303 to `next`. |
+| `POST /.tailisman/login` | Checks the rate limit, then CSRF, then the guest passwords for this site, then the owner password. Success sets the session cookie and answers 303 to `next`. |
 | `POST /.tailisman/exchange?next=` | Turns an issuer token into a session. A JSON post (the silent path) gets `{"device", "next"}`. The issuer's form post (the navigation path) gets a 303 to `next`. A refused token gets 403 with its code. |
 | `GET /.tailisman/` | Says how this browser is signed in and until when, with a Sign out button. |
 | `POST /.tailisman/logout` | Clears the cookie and answers 303 to the sign-in page. After sign-out the page waits for a click before trying the tailnet path again, so Sign out works on a tailnet device too. |
@@ -117,17 +118,37 @@ All routes live under `/.tailisman/` on each gated host.
 
 ## Sessions
 
-The cookie is `tailisman_gate=tsg1.<base64url payload>.<base64url HMAC-SHA256>`. The payload holds the method (`password` or `tailnet`), the device name for a tailnet session, the scope (the cookie domain or the host), and issue and expiry times. The gate keeps no session state.
+The owner's cookie is `tailisman_gate=tsg1.<base64url payload>.<base64url HMAC-SHA256>`. The payload holds the method (`password` or `tailnet`), the device name for a tailnet session, the scope (the cookie domain or the host), and issue and expiry times. The gate keeps no session state.
 
-The MAC key is `HMAC-SHA256(session_secret, "tailisman/gate/v1:" + password hash line)`. Changing the password changes the key, so it signs every session out, tailnet sessions included, without a restart or a session store.
+Its MAC key is `HMAC-SHA256(session_secret, "tailisman/gate/v1:" + password hash line)`. Changing the owner password changes the key, so it signs every owner session out, tailnet sessions included, without a restart or a session store.
+
+A guest's cookie is `tailisman_gate=tsg1g.<NAME>.<base64url payload>.<base64url HMAC-SHA256>`, with the method `guest` and the guest's name in the payload. Its MAC key is `HMAC-SHA256(session_secret, "tailisman/gate/guest/v1:" + NAME + "\n" + the guest's digest)`. The name is in clear because the key depends on it. The gate checks the MAC under that guest's key before it reads the payload, and refuses a payload whose name differs from the clear one.
 
 The cookie is `HttpOnly; Secure; SameSite=Lax; Path=/`, with `Max-Age` from `session_days` and `Domain` when `cookie_domain` is set. A session is accepted on a host only when the host is its scope or ends with `.` plus its scope. A browser can hold a parent-domain cookie and a host-only one under the same name, and the gate accepts the request if either is valid.
+
+## Guests
+
+A guest password lets one person into one or a few of the sites, and can be taken back without touching anyone else's sign-in.
+
+```sh
+tailisman passwd --config ~/.config/tailisman/gate.toml --add alice --sites notes.example.com,tools.example.com
+tailisman passwd --config ~/.config/tailisman/gate.toml --list
+tailisman passwd --config ~/.config/tailisman/gate.toml --revoke alice
+```
+
+`--add` generates a passphrase, writes it to `guests/alice` next to the config (mode 0600, in a 0700 directory), and adds the record to `guest_file`. It prints the paths, the name and the sites, never the passphrase. Hand the passphrase over and delete the file. `--sites` is required and every host must be a `[[sites]]` host of this gate, so a guest is never given every site by default. Adding a name that exists is refused unless `--force`, which replaces their password and so ends their sessions. `--revoke` removes the record and the passphrase file, and their sessions end on the next request. `--list` prints names and sites only. The gate re-reads the guest file when it changes, so none of these needs a restart.
+
+The guest file has one line per guest, `NAME SITES DIGEST`, such as `alice notes.example.com,tools.example.com sha256$<base64>`. `NAME` is 1 to 32 of `a-z`, `0-9`, `_` and `-`, starting with a letter or digit. `DIGEST` is SHA-256 over a fixed label and the passphrase, unsalted. That is safe only because guest passphrases are always generated, with about 80 bits like the owner's `--generate`, so nobody can guess one back from its digest. It keeps a login to one dictionary lookup plus the owner's scrypt. A malformed line is skipped, logged once, and kept when `passwd` rewrites the file.
+
+A guest's session is accepted on a host only when that host is still in the guest's sites, on top of the scope check every session gets. Their cookie carries the site's `cookie_domain`, so one sign-in covers all their sites, and the browser sends it to the owner's other sites under that domain too. The site check is what refuses it there. A guest's password typed into another site's form counts as a wrong password, with the same message and the same rate limit.
+
+Sessions are independent. Changing the owner password does not sign guests out, and revoking a guest does not sign the owner out. The session page says "Signed in as alice (guest)", the gate's log names the guest but never the password, and `gate status` prints how many guests each site has, without names.
 
 ## Password and rotation
 
 The hash line is `scrypt$15$8$1$<salt>$<hash>` (log2 N, r, p, base64 salt and hash). Verification runs scrypt with N = 2^15, which takes about 45 ms on an Apple silicon Mac, and compares with `hmac.compare_digest`. Only one scrypt runs at a time, which bounds memory to 32 MiB.
 
-To rotate, run `tailisman passwd` again. The gate re-reads the file when its modification time or size changes, so the new password works on the next request, and every existing session ends.
+To rotate, run `tailisman passwd` again. The gate re-reads the file when its modification time or size changes, so the new password works on the next request, and every existing owner session ends. Guest sessions do not.
 
 ## Rate limiting
 
@@ -195,8 +216,8 @@ The gate only reads files, so `ProtectSystem=strict` costs it nothing. Run `tail
 ## Caveats
 
 - A parent-domain cookie is sent to every host under that domain, including hosts the gate does not cover. Any app on such a host can read the cookie from its requests and replay it to a gated host. Use a host-only cookie, or a `cookie_domain` that covers only gated hosts, when some host under the domain is not yours to trust.
-- The cookie is a bearer token for its whole lifetime. Sign out clears it only in that browser. To end every session, change the password.
-- Changing the password signs everyone out, tailnet sessions included.
+- The cookie is a bearer token for its whole lifetime. Sign out clears it only in that browser. To end every owner session, change the password. To end a guest's, revoke them.
+- Changing the owner password signs out every owner session, tailnet sessions included, and no guest.
 - A request that skips Cloudflare can choose its own `CF-Connecting-IP`. The global rate limit is the backstop.
 - If the site's own `header` directive sets a `Content-Security-Policy`, scope it with `not path /.tailisman/*`, or the silent tailnet path is blocked.
 - Open rules are the app's responsibility. The gate refuses to match one against a path with a `..` segment, an empty segment (`//`, which also keeps a leading `//x` from being read as a host), a `;`, an encoded `.`, `/` or `\`, or a backslash, but whatever an open rule lets through reaches the app with no session.

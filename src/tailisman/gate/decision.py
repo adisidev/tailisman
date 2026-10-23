@@ -12,13 +12,14 @@ from collections.abc import Callable
 from email.message import Message
 from urllib.parse import quote, urlsplit
 
-from .config import GateConfig, Site, host_without_port, is_plain_path, site_key
+from .config import GateConfig, Site, is_plain_path, site_key
 from .session import COOKIE, Session, cookie_values
 
 LOGIN_PATH = "/.tailisman/login"
 NAVIGATION_METHODS = ("GET", "HEAD")
 
 SessionCheck = Callable[[tuple[str, ...], str, int], Session | None]
+"""(cookie values, site key, now) -> the session they hold on that site."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -71,7 +72,7 @@ def decide(request: GateRequest, config: GateConfig, check_session: SessionCheck
         return Unauthorised("not_from_forward_auth")
     if is_open(site, request.method, request.path):
         return Allow(None)
-    if session := check_session(request.cookies, host_without_port(site.host), now):
+    if session := check_session(request.cookies, site.host, now):
         return Allow(session)
     if request.method in NAVIGATION_METHODS and request.accepts_html:
         return SignIn(f"{LOGIN_PATH}?next={quote(request.uri, safe='')}")

@@ -13,7 +13,9 @@ import hmac
 import os
 import secrets
 import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import Generic, TypeVar
 
 LOG_N, R, P = 15, 8, 1
 SALT_BYTES = 16
@@ -22,6 +24,7 @@ CONSONANTS = "bcdfghjklmnprstvwxyz"
 VOWELS = "aeiou"
 GROUPS = 6
 MAX_MEMORY = 256 * 1024 * 1024
+T = TypeVar("T")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -59,17 +62,18 @@ def parse_hash(line: str) -> PasswordHash | None:
     return PasswordHash(line.strip(), log_n, r, p, salt, digest)
 
 
-class PasswordFile:
-    """Re-reads the file when its mtime or size changes, so `tailisman passwd` takes effect without a restart."""
+class ReloadingFile(Generic[T]):
+    """A parsed file, re-read when its mtime or size changes, so `tailisman passwd` takes effect without a restart."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, parse: Callable[[str], T], missing: T) -> None:
         self.path = path
+        self._parse = parse
+        self._missing = missing
         self._lock = threading.Lock()
         self._stamp: tuple[int, int] | None = None
-        self._hash: PasswordHash | None = None
+        self._value = missing
 
-    def current(self) -> PasswordHash | None:
-        """None when the file is missing or malformed, which turns the password path off."""
+    def current(self) -> T:
         try:
             info = os.stat(self.path)
             stamp = (info.st_mtime_ns, info.st_size)
@@ -78,15 +82,20 @@ class PasswordFile:
         with self._lock:
             if stamp != self._stamp:
                 self._stamp = stamp
-                self._hash = self._read() if stamp is not None else None
-            return self._hash
+                self._value = self._read() if stamp is not None else self._missing
+            return self._value
 
-    def _read(self) -> PasswordHash | None:
+    def _read(self) -> T:
         try:
-            lines = self.path.read_text().splitlines()
+            return self._parse(self.path.read_text())
         except (OSError, UnicodeDecodeError):
-            return None
-        return parse_hash(lines[0]) if len(lines) == 1 else None
+            return self._missing
+
+
+def parse_password_file(text: str) -> PasswordHash | None:
+    """None when the file is malformed, which turns the password path off."""
+    lines = text.splitlines()
+    return parse_hash(lines[0]) if len(lines) == 1 else None
 
 
 def generate_passphrase(groups: int = GROUPS) -> str:

@@ -3,6 +3,7 @@
 listen = "127.0.0.1:8471"                     # loopback only; Caddy's forward_auth and reverse_proxy point here
 session_secret_file = "gate-secret"           # 32 bytes from `tailisman keygen`; relative paths resolve against this file's directory
 password_file = "gate-password"               # one scrypt hash line, written by `tailisman passwd`; missing means the password path is off
+guest_file = "guest-passwords"                # optional, this is the default; guest records written by `tailisman passwd --add NAME --sites ...`
 session_days = 30                             # 1 to 400
 issuer = "https://laptop.example-tailnet.ts.net:8443"   # optional; without it only the password path exists
 
