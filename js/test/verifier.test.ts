@@ -73,6 +73,7 @@ test("extractToken reads both bodies and refuses others", () => {
 test("extractToken turns hostile bodies into malformed", () => {
   const hostile: Array<[string, string | Uint8Array]> = [
     ["application/json", "[".repeat(100_000) + "]".repeat(100_000)],
+    ["application/json", "[".repeat(8000) + "]".repeat(8000)],
     ["application/json", `{"token":"${"a".repeat(MAX_TOKEN + 1)}"}`],
     ["application/x-www-form-urlencoded", `token=${"a".repeat(MAX_TOKEN + 1)}`],
     ["application/json", new TextEncoder().encode(`{"token":"tsm1.a.b","pad":"${"a".repeat(MAX_BODY)}"}`)],

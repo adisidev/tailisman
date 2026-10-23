@@ -113,6 +113,7 @@ def test_extract_token_refuses_other_bodies(content_type, body):
 
 @pytest.mark.parametrize("content_type,body", [
     ("application/json", b"[" * 100_000 + b"]" * 100_000),
+    ("application/json", b"[" * 8000 + b"]" * 8000),
     ("application/json", b'{"token": {"token": ' * 5_000 + b"1" + b"}" * 5_000),
     ("application/json", b'{"token": "' + b"a" * (MAX_TOKEN + 1) + b'"}'),
     ("application/x-www-form-urlencoded", b"token=" + b"a" * (MAX_TOKEN + 1)),
