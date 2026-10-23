@@ -556,3 +556,20 @@ def test_passwd_generate_needs_out(tmp_path, capsys):
     config = write_gate_dir(tmp_path, password=None)
     assert main(["passwd", "--config", str(config), "--generate"]) == 2
     assert "--out" in capsys.readouterr().err
+
+
+# Cookies minted before guests existed
+
+
+GOLDEN_LINE = "scrypt$10$8$1$c2FsdHNhbHQ=$aGFzaGhhc2hoYXNoaGFzaA=="
+GOLDEN_PASSWORD_COOKIE = "tsg1.eyJtIjoicGFzc3dvcmQiLCJkZXYiOm51bGwsInNjb3BlIjoiZXhhbXBsZS5jb20iLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMjU5MjAwMH0.viL96Tr54ToIcgBswYE6TAGaM8HhjW1kre54dpIqkno"
+GOLDEN_TAILNET_COOKIE = "tsg1.eyJtIjoidGFpbG5ldCIsImRldiI6ImxhcHRvcCIsInNjb3BlIjoidG9vbHMuZXhhbXBsZS5jb20iLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMjU5MjAwMH0.1KNr_6EUOWZaUWIszRqGSR0AvOr4XeT_6wcUDE-hnbc"
+
+
+def test_owner_cookies_minted_by_the_released_gate_still_verify(gate, tmp_path):
+    (tmp_path / "gate-password").write_text(GOLDEN_LINE + "\n")
+    allowed = verify_request(gate, host=NOTES, cookie=GOLDEN_PASSWORD_COOKIE)
+    assert allowed.status == 200 and header(allowed, "X-Tailisman-Session") == ["password"]
+    tailnet = verify_request(gate, cookie=GOLDEN_TAILNET_COOKIE)
+    assert tailnet.status == 200 and header(tailnet, "X-Tailisman-Session") == ["tailnet"]
+    assert verify_request(gate, host=NOTES, cookie=GOLDEN_TAILNET_COOKIE).status == 302
