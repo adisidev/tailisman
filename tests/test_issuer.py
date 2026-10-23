@@ -277,3 +277,26 @@ def test_unix_socket_listener(short_tmp, monkeypatch):
         assert response.status == 200 and json.loads(response.read())["token"].startswith("tsm1.")
     finally:
         running.close()
+
+
+def test_unix_socket_is_never_looser_than_0660(short_tmp, monkeypatch):
+    import os, stat
+    from tailisman.issuer import http as issuer_http
+
+    monkeypatch.setenv("FAKE_TAILSCALE_STATE", str(short_tmp / "state.json"))
+    sock = short_tmp / "issuer.sock"
+    modes = []
+    bind = issuer_http._ThreadingUnixHTTPServer.server_bind
+
+    def observed_bind(self):
+        bind(self)
+        modes.append(stat.S_IMODE(os.stat(sock).st_mode))
+
+    monkeypatch.setattr(issuer_http._ThreadingUnixHTTPServer, "server_bind", observed_bind)
+    previous = os.umask(0)
+    try:
+        running = Issuer(write_issuer_dir(short_tmp, listen=f"unix:{sock}"))
+    finally:
+        os.umask(previous)
+    running.close()
+    assert modes and modes[0] & 0o007 == 0

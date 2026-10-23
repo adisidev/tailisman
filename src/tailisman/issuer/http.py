@@ -214,6 +214,10 @@ def make_server(app: IssuerApp) -> socketserver.BaseServer:
         if not stat.S_ISSOCK(path.stat().st_mode):
             raise SystemExit(f"tailisman: {path} exists and is not a socket")
         path.unlink()
-    server = _ThreadingUnixHTTPServer(str(path), handler)
+    previous = os.umask(0o117)
+    try:
+        server = _ThreadingUnixHTTPServer(str(path), handler)
+    finally:
+        os.umask(previous)
     os.chmod(path, 0o660)
     return server
