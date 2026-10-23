@@ -1,0 +1,220 @@
+import html
+import json
+import re
+from urllib.parse import quote
+
+import pytest
+
+from tailisman import Verifier
+from tailisman._token import derive_consumer_key, format_key
+
+from conftest import Issuer, UnixHTTPConnection, write_issuer_dir
+
+HECKLE = "https://heckle.example.com"
+NOTES = "https://notes.example.com"
+DEMO = "http://localhost:8080"
+
+
+def verifier_for(issuer, origin):
+    return Verifier(key=format_key(derive_consumer_key(issuer.config.master, origin)), audience=origin)
+
+
+def claim(issuer, origin=HECKLE, query="a=0", **kwargs):
+    response, body = issuer.request("GET", f"/v1/claim?{query}", origin=origin, **kwargs)
+    return response, json.loads(body)
+
+
+def test_allowlisted_device_gets_a_token_the_verifier_accepts(issuer):
+    response, body = claim(issuer)
+    assert response.status == 200
+    assert response.getheader("Access-Control-Allow-Origin") == HECKLE
+    assert response.getheader("Vary") == "Origin"
+    assert response.getheader("Access-Control-Allow-Private-Network") == "true"
+    assert response.getheader("Cache-Control") == "no-store"
+    verified = verifier_for(issuer, HECKLE).verify(body["token"])
+    assert (verified.node_id, verified.node_name, verified.login, verified.audience) == ("nEXAMPLE1CNTRL", "laptop", "owner@example.com", HECKLE)
+    assert verified.expires_at - verified.issued_at == 60
+
+
+def test_token_for_one_audience_fails_under_another_audience_key(issuer):
+    _, body = claim(issuer, origin=HECKLE)
+    with pytest.raises(Exception) as caught:
+        verifier_for(issuer, DEMO).verify(body["token"])
+    assert caught.value.code == "bad_signature"
+
+
+@pytest.mark.parametrize("peer,how", [
+    ("100.64.0.1", "short name"),
+    ("100.64.0.2", "stable ID"),
+    ("100.64.0.5", "MagicDNS name with trailing dot"),
+    ("100.64.0.6", "MagicDNS name without trailing dot"),
+])
+def test_allowlist_entries_match(issuer, peer, how):
+    response, _ = claim(issuer, peer=peer)
+    assert response.status == 200, how
+
+
+@pytest.mark.parametrize("peer,code", [
+    ("100.64.0.3", "not_on_allowlist"),
+    ("100.64.0.4", "tagged_node"),
+    ("100.64.0.99", "unknown_peer"),
+])
+def test_refused_peers(issuer, peer, code):
+    response, body = claim(issuer, peer=peer)
+    assert (response.status, body) == (403, {"error": code})
+    assert response.getheader("Access-Control-Allow-Origin") == HECKLE
+
+
+def test_unknown_origin_gets_403_and_no_cors(issuer):
+    response, body = claim(issuer, origin="https://evil.example.com")
+    assert (response.status, body) == (403, {"error": "unknown_audience"})
+    assert response.getheader("Access-Control-Allow-Origin") is None
+
+
+def test_missing_origin_is_unknown_audience(issuer):
+    response, body = claim(issuer, origin=None)
+    assert body == {"error": "unknown_audience"}
+
+
+@pytest.mark.parametrize("headers", [
+    {"X-Forwarded-For": None},
+    {"X-Forwarded-Proto": None},
+    {"X-Forwarded-Proto": "http"},
+    {"X-Forwarded-For": "1.2.3.4, 100.64.0.1"},
+    {"X-Forwarded-For": "not-an-ip"},
+])
+def test_requests_not_from_serve_get_421(issuer, headers):
+    response, body = claim(issuer, headers=headers)
+    assert (response.status, body) == (421, {"error": "not_behind_serve"})
+
+
+def test_repeated_forwarded_for_headers_get_421(issuer):
+    conn = issuer.connect()
+    conn.putrequest("GET", "/v1/claim")
+    for name, value in [("Origin", HECKLE), ("X-Forwarded-Proto", "https"), ("X-Forwarded-For", "100.64.0.1"), ("X-Forwarded-For", "100.64.0.2")]:
+        conn.putheader(name, value)
+    conn.endheaders()
+    assert conn.getresponse().status == 421
+
+
+def test_funnel_traffic_is_refused(issuer):
+    response, body = claim(issuer, headers={"Tailscale-Funnel-Request": "?1"})
+    assert body == {"error": "funnel_request"}
+
+
+def test_refusal_order_puts_serve_checks_before_audience(issuer):
+    assert claim(issuer, origin="https://evil.example.com", headers={"Tailscale-Funnel-Request": "?1"})[1] == {"error": "funnel_request"}
+    assert claim(issuer, origin="https://evil.example.com", headers={"X-Forwarded-Proto": None})[1] == {"error": "not_behind_serve"}
+    assert claim(issuer, origin="https://evil.example.com", peer="100.64.0.99")[1] == {"error": "unknown_audience"}
+
+
+def test_login_header_must_match_whois(issuer):
+    response, body = claim(issuer, login="intruder@example.com")
+    assert body == {"error": "identity_mismatch"}
+
+
+def test_user_restriction(issuer):
+    assert claim(issuer, origin=NOTES, peer="100.64.0.5")[1] == {"error": "user_not_allowed"}
+    assert claim(issuer, origin=HECKLE, peer="100.64.0.5")[0].status == 200
+
+
+def test_refuse_automation_by_flag_and_by_user_agent(issuer):
+    assert claim(issuer, origin=NOTES, query="a=1")[1] == {"error": "automation"}
+    assert claim(issuer, origin=NOTES, headers={"User-Agent": "Mozilla/5.0 HeadlessChrome/155.0"})[1] == {"error": "automation"}
+    assert claim(issuer, origin=NOTES, query="a=0")[0].status == 200
+    assert claim(issuer, origin=HECKLE, query="a=1")[0].status == 200
+
+
+def test_preflight(issuer):
+    response, _ = issuer.request("OPTIONS", "/v1/claim", origin=HECKLE, headers={"Access-Control-Request-Method": "GET", "Access-Control-Request-Private-Network": "true"})
+    assert response.status == 204
+    assert response.getheader("Access-Control-Allow-Origin") == HECKLE
+    assert response.getheader("Access-Control-Allow-Private-Network") == "true"
+    response, _ = issuer.request("OPTIONS", "/v1/claim", origin="https://evil.example.com")
+    assert response.status == 403 and response.getheader("Access-Control-Allow-Origin") is None
+
+
+def test_start_renders_a_self_submitting_form_to_return_to(issuer):
+    return_to = f"{DEMO}/auth/tailisman"
+    response, body = issuer.request("GET", f"/v1/start?return_to={quote(return_to)}&a=0")
+    page = body.decode()
+    assert response.status == 200
+    assert f'<form method=post action="{return_to}">' in page
+    token = html.unescape(re.search(r'name=token value="([^"]+)"', page).group(1))
+    assert verifier_for(issuer, DEMO).verify(token).node_name == "laptop"
+    assert response.getheader("Referrer-Policy") == "no-referrer"
+    csp = response.getheader("Content-Security-Policy")
+    script = re.search(r"<script>(.*?)</script>", page).group(1)
+    import base64, hashlib
+    assert f"'sha256-{base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()}'" in csp
+    assert f"form-action {DEMO}" in csp
+    assert "<button type=submit>" in page
+
+
+@pytest.mark.parametrize("return_to", ["https://evil.example.com/auth", "javascript:alert(1)", "/auth/tailisman", ""])
+def test_start_refuses_return_to_outside_the_audiences(issuer, return_to):
+    response, body = issuer.request("GET", f"/v1/start?return_to={quote(return_to)}")
+    assert response.status == 403
+    assert b"unknown_audience" in body and b"<form" not in body
+
+
+def test_start_refusal_links_back_to_the_audience(issuer):
+    response, body = issuer.request("GET", f"/v1/start?return_to={quote(HECKLE + '/x')}", peer="100.64.0.3")
+    assert response.status == 403
+    assert b"not_on_allowlist" in body and f'href="{HECKLE}"'.encode() in body
+
+
+def test_status_page_shows_device_and_verdicts(issuer):
+    response, body = issuer.request("GET", "/", peer="100.64.0.3")
+    page = body.decode()
+    assert response.status == 200
+    assert "tablet" in page and "nEXAMPLE3CNTRL" in page
+    assert f"{HECKLE}: refuses: not_on_allowlist" in page
+    assert html.escape('devices = ["nEXAMPLE3CNTRL"]  # tablet') in page
+
+
+def test_status_page_for_an_allowed_device_lists_accepting_sites(issuer):
+    page = issuer.request("GET", "/", peer="100.64.0.1")[1].decode()
+    assert f"{HECKLE}: accepts" in page
+    assert "devices = [" not in page
+
+
+def test_status_page_escapes_html(issuer):
+    page = issuer.request("GET", "/", peer="100.64.0.7")[1].decode()
+    assert "evil&lt;script&gt;x" in page
+    assert "<script>" not in page
+
+
+def test_status_page_shows_tagged_devices(issuer):
+    page = issuer.request("GET", "/", peer="100.64.0.4")[1].decode()
+    assert "tag:server" in page and "refuses: tagged_node" in page
+
+
+def test_healthz_needs_no_identity(issuer):
+    response, body = issuer.request("GET", "/healthz", serve=False)
+    assert (response.status, body) == (200, b"ok\n")
+
+
+def test_unknown_route_and_method(issuer):
+    assert issuer.request("GET", "/nope")[0].status == 404
+    assert issuer.request("POST", "/v1/claim", origin=HECKLE)[0].status == 405
+
+
+def test_unix_socket_listener(short_tmp, monkeypatch):
+    import os, stat
+
+    monkeypatch.setenv("FAKE_TAILSCALE_STATE", str(short_tmp / "state.json"))
+    sock = short_tmp / "issuer.sock"
+    sock.write_text("")
+    with pytest.raises(SystemExit):
+        Issuer(write_issuer_dir(short_tmp, listen=f"unix:{sock}"))
+    sock.unlink()
+    running = Issuer(write_issuer_dir(short_tmp, listen=f"unix:{sock}"))
+    try:
+        assert stat.S_IMODE(os.stat(sock).st_mode) == 0o660
+        conn = UnixHTTPConnection(str(sock))
+        conn.request("GET", "/v1/claim", headers={"Origin": HECKLE, "X-Forwarded-For": "100.64.0.1", "X-Forwarded-Proto": "https"})
+        response = conn.getresponse()
+        assert response.status == 200 and json.loads(response.read())["token"].startswith("tsm1.")
+    finally:
+        running.close()
