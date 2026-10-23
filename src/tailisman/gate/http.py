@@ -89,7 +89,7 @@ class GateApp:
         request = Incoming(method, url.path, parse_qs(url.query), headers, body, peer)
         if url.path in self.static:
             content_type, data = self.static[url.path]
-            return Response(200, (("Content-Type", content_type), ("Cache-Control", "no-cache"), ("X-Content-Type-Options", "nosniff")), data), None
+            return Response(200, (("Content-Type", content_type), ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")), data), None
         if url.path == "/.tailisman/healthz":
             return _text(200, "ok\n"), None
         if url.path == "/.tailisman/verify":

@@ -82,6 +82,26 @@ def main() -> int:
             fallback.wait_for_url(f"{tools}/notes", timeout=15000)
             c.check("the button signs in through the tailnet listener's navigation path", '"upstream": true' in fallback.content(), fallback.url)
 
+            restarting = context().new_page()
+            dropped = []
+            restarting.route(f"{stack.issuer_url}/v1/claim*", lambda route: (dropped.append(1), route.abort()) if not dropped else route.continue_())
+            restarting.goto(f"{tools}/notes?restart=1")
+            restarting.wait_for_url(f"{tools}/notes?restart=1", timeout=15000)
+            c.check("a tailnet listener that is down for the first try (a gate restarting) is tried once more and signs in", '"upstream": true' in restarting.content() and dropped == [1], restarting.url)
+
+            lost = context().new_page()
+            refused = []
+            lost.route(f"{tools}/.tailisman/exchange*", lambda route: (refused.append(1), route.fulfill(status=403, content_type="application/json", body='{"error": "malformed"}')) if not refused else route.continue_())
+            lost.goto(f"{tools}/notes?lost=1")
+            lost.wait_for_url(f"{tools}/notes?lost=1", timeout=15000)
+            c.check("a code lost to a gate restart (refused at the exchange) is fetched again once and signs in", '"upstream": true' in lost.content() and refused == [1], lost.url)
+
+            gone = context().new_page()
+            gone.route(f"{stack.issuer_url}/v1/claim*", lambda route: route.abort())
+            gone.goto(f"{tools}/notes?gone=1")
+            gone.wait_for_selector("#tailnet-signin:not([hidden])", timeout=15000)
+            c.check("when the listener stays down the page says why and keeps the password and the button", gone.is_visible("text=No tailnet device answered.") and gone.is_visible("#password"))
+
             claim_js = "issuer => fetch(issuer + '/v1/claim', {targetAddressSpace: 'loopback'}).then(r => r.json()).then(b => b.token)"
             redeem_js = "code => fetch('/.tailisman/exchange', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({token: code})}).then(async r => [r.status, await r.json()])"
             codes = context()
