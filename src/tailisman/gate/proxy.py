@@ -170,13 +170,16 @@ def _request_body(handler: http.server.BaseHTTPRequestHandler, body: int | str |
             yield piece
 
 
+_CHUNK_SIZE = re.compile(rb"[0-9A-Fa-f]{1,16}")
+
+
 def _read_chunks(rfile) -> Iterator[bytes]:
     while True:
         line = rfile.readline(1024)
-        try:
-            size = int(line.split(b";")[0].strip(), 16)
-        except ValueError:
-            raise BadRequest("malformed chunk size") from None
+        digits = line.split(b";")[0].strip()
+        if not _CHUNK_SIZE.fullmatch(digits):
+            raise BadRequest("malformed chunk size")
+        size = int(digits, 16)
         if size == 0:
             for _ in range(MAX_TRAILERS + 1):
                 if rfile.readline(8192) in (b"\r\n", b"\n", b""):

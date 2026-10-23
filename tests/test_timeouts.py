@@ -113,3 +113,13 @@ def test_a_chunked_body_may_carry_a_few_trailer_lines_but_not_an_endless_stream(
     response.begin()
     sock.close()
     assert response.status == status
+
+
+@pytest.mark.parametrize("size", ["-1", "1_0", "0x3", "+3", ""])
+def test_a_chunk_size_that_is_not_plain_hex_is_refused(gate, size):
+    sock = socket.create_connection(gate, timeout=10)
+    sock.sendall(f"POST /public/upload HTTP/1.1\r\nHost: app.example.com\r\nTransfer-Encoding: chunked\r\n\r\n{size}\r\nabc\r\n0\r\n\r\n".encode())
+    response = http.client.HTTPResponse(sock)
+    response.begin()
+    sock.close()
+    assert response.status == 502
