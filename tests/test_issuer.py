@@ -223,13 +223,13 @@ def test_start_refusal_links_back_to_the_audience(issuer):
     assert b"not_on_allowlist" in body and f'href="{HECKLE}"'.encode() in body
 
 
-def test_status_page_shows_device_and_verdicts(issuer):
+def test_status_page_for_a_device_no_site_accepts_shows_only_its_identity(issuer):
     response, body = issuer.request("GET", "/", peer="192.0.2.3")
     page = body.decode()
     assert response.status == 200
     assert "tablet" in page and "nEXAMPLE3CNTRL" in page
-    assert f"{HECKLE}: refuses: not_on_allowlist" in page
     assert html.escape('devices = ["nEXAMPLE3CNTRL"]  # tablet') in page
+    assert "example.com" not in page.replace("owner@example.com", "") and "localhost" not in page
 
 
 def test_status_page_for_an_allowed_device_lists_accepting_sites(issuer):
@@ -244,9 +244,15 @@ def test_status_page_escapes_html(issuer):
     assert "<script>" not in page
 
 
-def test_status_page_shows_tagged_devices(issuer):
+def test_status_page_shows_tagged_devices_their_identity_only(issuer):
     page = issuer.request("GET", "/", peer="192.0.2.4")[1].decode()
-    assert "tag:server" in page and "refuses: tagged_node" in page
+    assert "tag:server" in page and "always refused" in page
+    assert "heckle" not in page and "devices = [" not in page
+
+
+def test_status_page_lists_sites_for_a_device_some_site_accepts(issuer):
+    page = issuer.request("GET", "/", peer="192.0.2.5")[1].decode()
+    assert f"{HECKLE}: accepts" in page and f"{NOTES}: refuses: user_not_allowed" in page
 
 
 def test_healthz_needs_no_identity(issuer):

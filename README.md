@@ -48,7 +48,7 @@ tailisman check --config /etc/tailisman/issuer.toml
 
 Never put the issuer behind `tailscale funnel`. The issuer refuses any request that carries serve's `Tailscale-Funnel-Request` header, and `tailisman check` exits non-zero when Funnel is on for the host that proxies to the issuer.
 
-Open `https://<issuer-host>.example-tailnet.ts.net:8443/` from any of your devices. The status page shows that device's name, stable ID, login, whether it is tagged, and which configured sites would accept it. For a device that is not allowlisted it prints the TOML line to add.
+Open `https://<issuer-host>.example-tailnet.ts.net:8443/` from any of your devices. The status page shows that device's name, stable ID, login and whether it is tagged. A device that at least one configured site accepts also sees which sites would accept it. Any other device sees only its own identity and the TOML line to add, nothing about the configured sites, and a tagged device is told that tagged devices are always refused.
 
 ### 2. Give each consumer its key
 

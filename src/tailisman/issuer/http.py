@@ -105,12 +105,17 @@ class IssuerApp:
         }
         parts = ["<!doctype html><meta charset=utf-8><title>tailisman</title><h1>This device</h1><table>"]
         parts += [f"<tr><th>{html.escape(k)}<td>{html.escape(v)}" for k, v in rows]
-        parts.append("</table><h2>Sites that would accept it</h2><ul>")
-        for origin, verdict in verdicts.items():
-            result = "accepts" if isinstance(verdict, Grant) else f"refuses: {verdict.code}"
-            parts.append(f"<li>{html.escape(origin)}: {html.escape(result)}")
-        parts.append("</ul>")
-        if any(isinstance(v, Refusal) and v.code is RefusalCode.NOT_ON_ALLOWLIST for v in verdicts.values()):
+        parts.append("</table>")
+        allowed = any(isinstance(v, Grant) for v in verdicts.values())
+        if allowed:
+            parts.append("<h2>Sites that would accept it</h2><ul>")
+            for origin, verdict in verdicts.items():
+                result = "accepts" if isinstance(verdict, Grant) else f"refuses: {verdict.code}"
+                parts.append(f"<li>{html.escape(origin)}: {html.escape(result)}")
+            parts.append("</ul>")
+        if peer.tags:
+            parts.append("<p>Tagged devices are always refused, because they have no user identity.</p>")
+        elif not allowed or any(isinstance(v, Refusal) and v.code is RefusalCode.NOT_ON_ALLOWLIST for v in verdicts.values()):
             line = f"devices = [{json.dumps(peer.node_id)}]  # {peer.node_name}"
             parts.append(f"<p>To allow this device, add its stable ID to <code>devices</code> in issuer.toml:</p><pre>{html.escape(line)}</pre>")
         return _html(200, "".join(parts), PAGE_CSP)
