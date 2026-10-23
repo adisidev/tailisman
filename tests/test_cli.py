@@ -3,7 +3,7 @@ import os
 import stat
 
 from tailisman import Verifier
-from tailisman.issuer.cli import main
+from tailisman.cli import main
 
 from conftest import write_issuer_dir
 

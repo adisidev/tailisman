@@ -1,4 +1,4 @@
-"""The `tailisman` command: keygen, key, run, check."""
+"""The issuer's commands: keygen, key, run, check."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import os
 import secrets
 import subprocess
 import sys
+from collections.abc import Callable
 
 from .._token import derive_consumer_key, format_key, normalise_origin
 from .config import ConfigError, IssuerConfig, TcpListen, UnixListen, host_name, load_config, resolve_tailscale_bin
@@ -15,10 +16,8 @@ from .http import IssuerApp, make_server
 from .tailscale import cli_self_dns_name, cli_whois
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="tailisman", description="Tell a public web app that its visitor is on one of your tailnet devices.")
-    commands = parser.add_subparsers(dest="command", required=True)
-    keygen = commands.add_parser("keygen", help="write a new 32-byte master secret, mode 0600")
+def add_commands(commands: argparse._SubParsersAction) -> dict[str, Callable[[argparse.Namespace], int]]:
+    keygen = commands.add_parser("keygen", help="write a new 32-byte secret, mode 0600 (the issuer's master secret or the gate's session secret)")
     keygen.add_argument("path")
     key = commands.add_parser("key", help="print the key a consumer origin uses to verify tokens")
     key.add_argument("--config", required=True)
@@ -27,12 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--config", required=True)
     check = commands.add_parser("check", help="check the config, the tailscale binary and that serve, not Funnel, fronts the issuer")
     check.add_argument("--config", required=True)
-    args = parser.parse_args(argv)
-    try:
-        return {"keygen": _keygen, "key": _key, "run": _run, "check": _check}[args.command](args)
-    except ConfigError as exc:
-        print(f"tailisman: config error: {exc}", file=sys.stderr)
-        return 2
+    return {"keygen": _keygen, "key": _key, "run": _run, "check": _check}
 
 
 def _keygen(args: argparse.Namespace) -> int:
@@ -123,6 +117,3 @@ def _hosts_proxying_to(serve: dict, config: IssuerConfig) -> list[str]:
             hosts.append(host)
     return hosts
 
-
-if __name__ == "__main__":
-    sys.exit(main())
