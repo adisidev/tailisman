@@ -1,5 +1,5 @@
 import pytest
-from test_gate import PASSWORD, call, cookie_from, header, post_login, verify_request
+from test_gate import PASSWORD, call, write_gate_dir, TOOLS, cookie_from, header, post_login, verify_request
 from test_guests import A, B, add_guest, gate, gate_dir, passwd, sign_in, touch  # noqa: F401
 
 from tailisman.gate.config import load_config
@@ -151,3 +151,12 @@ def test_gate_toml_is_reloaded_on_change_and_a_broken_one_keeps_the_running_conf
     touch(path)
     assert verify_request(app, host=A, uri="/reports/x").status == 302
     assert "changes password_file, which needs a restart; the running config stays" in capsys.readouterr().err
+
+
+def test_an_edit_to_a_gate_toml_with_a_tailnet_section_reloads(tmp_path):
+    path = write_gate_dir(tmp_path)
+    app = GateApp(load_config(path))
+    assert verify_request(app, host=TOOLS, uri="/api/x", accept="application/json").status == 200
+    path.write_text(path.read_text().replace('open = ["/healthz", "/api/*", "POST /report"]', 'open = ["/healthz"]'))
+    touch(path)
+    assert verify_request(app, host=TOOLS, uri="/api/x", accept="application/json").status == 401

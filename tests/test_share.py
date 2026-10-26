@@ -24,6 +24,11 @@ listen = "127.0.0.1:{port}"
 session_secret_file = "gate-secret"
 password_file = "gate-password"
 
+[tailnet]
+listen = "127.0.0.1:{tailnet_port}"
+serve_host = "laptop.example-tailnet.ts.net"
+devices = ["laptop"]
+
 [[sites]]
 host = "{host}"
 upstream = "http://127.0.0.1:{upstream}"
@@ -69,7 +74,7 @@ def live(tmp_path):
     (conf / "gate-secret").write_bytes(SECRET)
     (conf / "gate-password").write_text(hash_password(PASSWORD, log_n=10) + "\n")
     port = free_port()
-    (conf / "gate.toml").write_text(GATE_TOML.format(port=port, host=HOST, other=OTHER, upstream=upstream.server_port))
+    (conf / "gate.toml").write_text(GATE_TOML.format(port=port, tailnet_port=free_port(), host=HOST, other=OTHER, upstream=upstream.server_port))
     gate = serve(make_server(GateApp(load_config(conf / "gate.toml"))))
     yield conf, f"http://127.0.0.1:{port}"
     gate.shutdown()
@@ -222,7 +227,7 @@ def test_a_body_carrying_a_second_request_never_reaches_a_keep_alive_app(tmp_pat
     (tmp_path / "gate-secret").write_bytes(SECRET)
     (tmp_path / "gate-password").write_text(hash_password(PASSWORD, log_n=10) + "\n")
     port = free_port()
-    (tmp_path / "gate.toml").write_text(GATE_TOML.format(port=port, host=HOST, other=OTHER, upstream=upstream.server_port))
+    (tmp_path / "gate.toml").write_text(GATE_TOML.format(port=port, tailnet_port=free_port(), host=HOST, other=OTHER, upstream=upstream.server_port))
     gate = serve(make_server(GateApp(load_config(tmp_path / "gate.toml"))))
     code, report = run(capsys, tmp_path, "share", f"https://{HOST}/K/", "--to", "carol", "--no-check")
     phrase = (tmp_path / "guests" / "carol").read_text().strip()

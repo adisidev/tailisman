@@ -11,7 +11,8 @@ import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import secrets
+import hashlib
+import hmac
 
 from .._token import normalise_origin
 from ..issuer.config import Audience, ConfigError, IssuerConfig, Listen, TcpListen, UnixListen, host_name, parse_audience, parse_listen, string_list
@@ -207,7 +208,7 @@ def parse_config(raw: dict, base: Path = Path(".")) -> GateConfig:
         password_file=base / _required_str(raw, "password_file"),
         guest_file=base / _optional_str(raw, "guest_file", "guest-passwords"),
         session_days=days,
-        tailnet=_tailnet(raw["tailnet"], listen, sites) if "tailnet" in raw else None,
+        tailnet=_tailnet(raw["tailnet"], listen, sites, secret) if "tailnet" in raw else None,
         rate_limit=_rate_limits(raw.get("rate_limit", {})),
         sites=sites,
     )
@@ -288,7 +289,7 @@ def parse_upstream(text: object, host: str) -> Upstream:
     return Upstream(url.hostname, port)
 
 
-def _tailnet(table: object, public: TcpListen, sites: dict[str, Site]) -> Tailnet:
+def _tailnet(table: object, public: TcpListen, sites: dict[str, Site], session_secret: bytes) -> Tailnet:
     """Parsed with the issuer's own parsers; the audiences are the gated sites themselves."""
     if not isinstance(table, dict):
         raise ConfigError("tailnet must be a table")
@@ -323,8 +324,10 @@ def _tailnet(table: object, public: TcpListen, sites: dict[str, Site]) -> Tailne
     for site in sites.values():
         if site.tailnet:
             audiences[site.origin] = parse_audience({"origin": site.origin} | policy, devices)
-    # The gate never signs tokens; a random master means a stray mint() could not produce anything a verifier accepts.
-    checks = IssuerConfig(secrets.token_bytes(32), listen, ttl, tailscale_bin, host_name(serve_host), audiences)
+    # The gate never signs tokens. A master derived from the session secret is one no verifier holds, so a stray mint()
+    # produces nothing anyone accepts, and it is the same on every load, so a reload can tell an unchanged [tailnet].
+    master = hmac.new(session_secret, b"tailisman/gate/unused-issuer-master", hashlib.sha256).digest()
+    checks = IssuerConfig(master, listen, ttl, tailscale_bin, host_name(serve_host), audiences)
     return Tailnet(checks, origin, space)
 
 

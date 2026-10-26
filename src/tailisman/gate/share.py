@@ -190,14 +190,14 @@ def _share(args: argparse.Namespace, report: dict) -> Exit:
     passphrase = generate_passphrase() if new_password else _read_passphrase(passphrase_file)
     if args.print_once and passphrase is None:
         raise Failure(Exit.NOT_FOUND, "no_passphrase_file", f"{passphrase_file} is gone, so there is no passphrase to print", (f"rerun with --new-password --print-once, which signs {args.to} out",))
+    if args.close_open_rule and inside and target.rule is not None:
+        report["open_rules"]["backup"] = str(close_open_rules(config, site.host, inside))
+        report["open_rules"]["closed"] = [str(r) for r in inside]
     if new_password:
         directory = passphrase_file.parent
         directory.mkdir(mode=0o700, exist_ok=True)
         directory.chmod(0o700)
         write_private(passphrase_file, passphrase + "\n", overwrite=True)
-    if args.close_open_rule and inside and target.rule is not None:
-        report["open_rules"]["backup"] = str(close_open_rules(config, site.host, inside))
-        report["open_rules"]["closed"] = [str(r) for r in inside]
     digest = guest_digest(passphrase) if new_password else current.digest
     records = guest_records(config.guest_file)
     records[args.to] = Guest(args.to, grants, digest).line()
