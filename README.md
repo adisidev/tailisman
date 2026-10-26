@@ -3,10 +3,10 @@
 To set it up with a coding agent (Claude Code, Codex, Cursor, Copilot, Gemini CLI, or another), open the agent in your own project or home directory and type this.
 
 ```
-Lock my personal pages with adisidev/tailisman
+Lock my personal pages with [tailisman](https://github.com/adisidev/tailisman)
 ```
 
-An agent reading this follows [skills/tailisman/SKILL.md](skills/tailisman/SKILL.md) (raw: https://raw.githubusercontent.com/adisidev/tailisman/main/skills/tailisman/SKILL.md) from step 1. It is also an installable skill, `npx skills add adisidev/tailisman`.
+An agent reading this follows [skills/tailisman/SKILL.md](skills/tailisman/SKILL.md) (raw: https://raw.githubusercontent.com/adisidev/tailisman/main/skills/tailisman/SKILL.md) from step 1. It is also an installable skill, `npx skills add adisidev/tailisman`. Once the gate runs, the installed CLI carries the same guide: `tailisman guide` lists its topics, and `tailisman guide share` is how an agent gives someone a password for one page or folder.
 
 tailisman lets a public web app learn that the visitor's browser runs on one of your own tailnet devices.
 
@@ -248,7 +248,7 @@ tools.example.com {
 }
 ```
 
-`tailisman gate status --config ~/.config/tailisman/gate.toml` then checks that every site sends an anonymous visitor to the sign-in page. `tailisman passwd --config ... --add NAME --sites HOST[,HOST]` gives someone a guest password.
+`tailisman gate status --config ~/.config/tailisman/gate.toml` then checks that every site sends an anonymous visitor to the sign-in page. `tailisman share https://notes.example.com/reports/ --to NAME` gives someone a guest password for that folder, or for a whole site when the path is `/`.
 
 ## Development
 

@@ -359,7 +359,7 @@ def test_open_rule_lets_an_anonymous_request_through_but_not_a_traversal(gate):
 def test_decide_is_pure_over_its_inputs(gate):
     request = GateRequest(host=TOOLS, method="GET", uri="/", cookies=("x",), accepts_html=True)
     found = session()
-    assert decide(request, gate.config, lambda cookies, host, now: found, 0) == Allow(found)
+    assert decide(request, gate.config, lambda cookies, host, now, path: found, 0) == Allow(found)
     assert decide(request, gate.config, lambda *_: None, 0) == SignIn("/.tailisman/login?next=%2F")
     assert decide(GateRequest(TOOLS, "", "", (), True), gate.config, lambda *_: None, 0) == Unauthorised("not_from_forward_auth")
 

@@ -57,7 +57,7 @@ tailisman passwd --config ~/.config/tailisman/gate.toml --generate --out ~/.conf
 tailisman gate run --config ~/.config/tailisman/gate.toml
 ```
 
-`passwd --generate` writes a passphrase such as `bavu-tiko-relu-mazo-pine-dusa` to the `--out` file and its hash to the config's `password_file`, both mode 0600, and prints only the two paths (each as written, so the hash path is the config's `password_file` value). The gate reads `gate.toml` once at startup, so restart it after editing that file; the password and guest files are re-read on change. Read the passphrase from the file, store it in your password manager, and delete the file. Without `--generate`, `passwd` asks for a password twice (at least 12 characters).
+`passwd --generate` writes a passphrase such as `bavu-tiko-relu-mazo-pine-dusa` to the `--out` file and its hash to the config's `password_file`, both mode 0600, and prints only the two paths (each as written, so the hash path is the config's `password_file` value). The gate re-reads `gate.toml` when it changes, so sites, open rules and bearers take effect on the next request. A file that does not load keeps the running config, and so does a change to `listen`, the secret, `password_file`, `guest_file`, `[rate_limit]` or `[tailnet]` (which includes the sites it covers); both are logged once, and those keys need a restart. The password and guest files are re-read on change too. Read the passphrase from the file, store it in your password manager, and delete the file. Without `--generate`, `passwd` asks for a password twice (at least 12 characters).
 
 For the tailnet path, fill in `[tailnet]` with this machine's MagicDNS name and the devices to allow, and put the tailnet listener behind serve:
 
@@ -212,7 +212,7 @@ All routes live under `/.tailisman/` on each gated host. On a proxy site every o
 | --- | --- |
 | `GET /.tailisman/verify` | The `forward_auth` target. 200 with an empty body to allow, plus `X-Tailisman-Session` when there is a session or a listed bearer (`bearer`) and `X-Tailisman-User` for a guest. 302 to the sign-in page for a page navigation (`GET` or `HEAD` that accepts `text/html`), 401 with a small JSON body otherwise. |
 | `GET /.tailisman/login?next=` | The sign-in page. `next` must be a path on the same host. Anything else becomes `/`. A browser that already has a session goes straight to `next`. |
-| `POST /.tailisman/login` | Checks the rate limit, then CSRF, then the guest passwords for this site, then the owner password. Success sets the session cookie and answers 303 to `next`. |
+| `POST /.tailisman/login` | Checks the rate limit, then CSRF, then the guest passwords for this site, then the owner password. Success sets the session cookie and answers 303 to `next`, or for a path-scoped guest whose scope does not hold `next`, to their first path. |
 | `POST /.tailisman/exchange?next=` | Redeems a code from the tailnet listener for a session. A JSON post (the silent path) gets `{"device", "next"}`. The tailnet listener's form post (the navigation path) gets a 303 to `next`. A refused code gets 403 with its error. |
 | `GET /.tailisman/` | Says how this browser is signed in and until when, with a Sign out button. |
 | `POST /.tailisman/logout` | Clears the cookie and answers 303 to the sign-in page. After sign-out the page waits for a click before trying the tailnet path again, so Sign out works on a tailnet device too. |
@@ -230,19 +230,44 @@ The cookie is `HttpOnly; Secure; SameSite=Lax; Path=/`, with `Max-Age` from `ses
 
 ## Guests
 
-A guest password lets one person into one or a few of the sites, and can be taken back without touching anyone else's sign-in.
+A guest password lets one person into one or a few of the sites, or only into some folders or links on them, and can be taken back without touching anyone else's sign-in.
+
+```sh
+tailisman share https://notes.example.com/reports/ --to alice               # the folder /reports/ and everything under it
+tailisman share https://notes.example.com/today.html --to alice             # one more scope for alice: that exact link
+tailisman share https://tools.example.com/ --to alice                       # the whole of tools.example.com
+tailisman guests
+tailisman unshare https://notes.example.com/today.html --from alice
+tailisman unshare --from alice                                              # remove alice
+```
+
+`share`, `unshare` and `guests` are written for agents: they never prompt, take `--json` and `--dry-run`, read `$TAILISMAN_GATE_CONFIG` or `~/.config/tailisman/gate.toml` unless given `--config`, and exit with one code per kind of failure. `share` checks its work against the live site, reports the page's same-origin assets and links outside the shared scope, and with `--close-open-rule` removes open rules inside the scope after backing `gate.toml` up. The [agent guide's sharing section](../skills/tailisman/SKILL.md#share-a-page-with-someone) has the flags, the JSON keys and the exit codes; `tailisman guide share` prints it.
+
+The older commands do the same by hand:
 
 ```sh
 tailisman passwd --config ~/.config/tailisman/gate.toml --add alice --sites notes.example.com,tools.example.com
+tailisman passwd --config ~/.config/tailisman/gate.toml --add bob --sites notes.example.com --paths '/reports/*' --paths /today.html
 tailisman passwd --config ~/.config/tailisman/gate.toml --list
 tailisman passwd --config ~/.config/tailisman/gate.toml --revoke alice
 ```
 
-`--add` generates a passphrase, writes it to `guests/alice` next to the config (mode 0600, in a 0700 directory), and adds the record to `guest_file`. It prints the paths, the name and the sites, never the passphrase. Hand the passphrase over and delete the file. `--sites` is required and every host must be a `[[sites]]` host of this gate, so a guest is never given every site by default. Adding a name that exists is refused unless `--force`, which replaces their password and so ends their sessions. `--revoke` removes the record and the passphrase file, and their sessions end on the next request. `--list` prints names and sites only. The gate re-reads the guest file when it changes, so none of these needs a restart.
+`--add` generates a passphrase, writes it to `guests/alice` next to the config (mode 0600, in a 0700 directory), and adds the record to `guest_file`. It prints the paths, the name and the sites, never the passphrase. Hand the passphrase over and delete the file. `--sites` is required and every host must be a `[[sites]]` host of this gate, so a guest is never given every site by default. Adding a name that exists is refused unless `--force`, which replaces their password and so ends their sessions. `--revoke` removes the record and the passphrase file, and their sessions end on the next request. `--paths` (repeatable, or comma-separated) limits the guest to those paths on every site in `--sites`. `--list` prints names and scopes only. The gate re-reads the guest file when it changes, so none of these needs a restart.
 
-The guest file has one line per guest, `NAME SITES DIGEST`, such as `alice notes.example.com,tools.example.com sha256$<base64>`. `NAME` is 1 to 32 of `a-z`, `0-9`, `_` and `-`, starting with a letter or digit. `DIGEST` is SHA-256 over a fixed label and the passphrase, unsalted. That is safe only because guest passphrases are always generated, with about 80 bits like the owner's `--generate`, so nobody can guess one back from its digest. It keeps a login to one dictionary lookup plus the owner's scrypt. A malformed line is skipped, logged once, and kept when `passwd` rewrites the file.
+The guest file has one line per guest, `NAME GRANTS DIGEST`, such as `alice notes.example.com,tools.example.com sha256$<base64>`. `GRANTS` is comma-separated: a bare host opens the whole host, and a host followed by a path opens only that folder (`notes.example.com/reports/*`) or that exact link (`notes.example.com/today.html`). A host may appear with several paths; a bare host beats its paths. `NAME` is 1 to 32 of `a-z`, `0-9`, `_` and `-`, starting with a letter or digit. `DIGEST` is SHA-256 over a fixed label and the passphrase, unsalted. That is safe only because guest passphrases are always generated, with about 80 bits like the owner's `--generate`, so nobody can guess one back from its digest. It keeps a login to one dictionary lookup plus the owner's scrypt. A malformed line, a bad path in it included, is skipped, logged once, and kept when `passwd` rewrites the file, so a typo never widens a guest. A gate older than path scopes skips a line with a path the same way.
 
 A guest's session is accepted on a host only when that host is still in the guest's sites, on top of the scope check every session gets. Their cookie carries the site's `cookie_domain`, so one sign-in covers all their sites, and the browser sends it to the owner's other sites under that domain too. The site check is what refuses it there. A guest's password typed into another site's form counts as a wrong password, with the same message and the same rate limit.
+
+### Path scopes
+
+A guest with paths on a host is let in there only on those paths. Anywhere else on that host their cookie counts as no session: a page navigation is sent to the sign-in page, as if they were signed out, and anything else gets 401. Nothing tells them whether the path exists.
+
+- The scope is read from the guest file on every request, not from the cookie, so a `share` or `unshare` applies to sessions already open, and revoking the guest ends them. A guest's cookie is the same with or without paths.
+- A folder (`/reports/*`) matches every path that starts with `/reports/`. An exact link (`/today.html`) matches that path only, with any query string. `/reports` without the slash is outside `/reports/*`.
+- The match is on the raw request path, before any decoding, and it must also be a plain path in the sense of the open rules: no `..` segment, no empty segment (`//`), no `;`, no backslash, and no `%2e`, `%2f` or `%5c` in any case. Anything else is refused, so no spelling the app might normalise reaches outside the scope. The match is case-sensitive: on an app that serves files case-insensitively, `/REPORTS/x` is refused, never let in.
+- The scope is a set of URL paths. A symlink inside a shared folder serves whatever it points to, and an app route under the folder answers like any other path there.
+- Sign-in lands on the `next` path when the guest may open it, and otherwise on their first path on that host. The session page's "Back to the site" link goes there too.
+- A shared page usually loads CSS, scripts and images. When they sit outside the scope, the guest gets the sign-in page for each. `share` names them; share the folder that holds the page and its files instead, or share each one.
 
 Sessions are independent. Changing the owner password does not sign guests out, and revoking a guest does not sign the owner out. The session page says "Signed in as alice (guest)", the gate's log names the guest but never the password, and `gate status` prints how many guests each site has, without names.
 

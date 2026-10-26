@@ -1,13 +1,13 @@
 ---
 name: tailisman
-description: This skill should be used when the user asks to lock, secure, password-protect, put a login in front of, or make private their personal pages, self-hosted sites, dashboards, or tools on their own domain, for example "Lock my personal pages with adisidev/tailisman". It sets up the tailisman gate, which signs the owner in silently from their own Tailscale devices and asks everyone else for a password, in front of sites served through Cloudflare Tunnel, Caddy, nginx, or tailscale serve.
+description: This skill should be used when the user asks to lock, secure, password-protect, put a login in front of, or make private their personal pages, self-hosted sites, dashboards, or tools on their own domain, for example "Lock my personal pages with [tailisman](https://github.com/adisidev/tailisman)", or to give someone access to one gated page or folder, for example "give alice a password for https://notes.example.com/reports/". It sets up the tailisman gate, which signs the owner in silently from their own Tailscale devices and asks everyone else for a password, in front of sites served through Cloudflare Tunnel, Caddy, nginx, or tailscale serve.
 ---
 
 # Lock personal pages with tailisman
 
 You are setting up the tailisman gate for one owner. When you finish, every chosen page answers an anonymous visitor with a sign-in page, the owner's own tailnet devices get in without typing anything, a backup password works everywhere else, and every script or app that used to call those pages still works.
 
-Work through the steps in order. Each step ends in a check. Do not go to the next step until the check passes.
+Work through the steps in order. Each step ends in a check. Do not go to the next step until the check passes. If the gate is already running and the user wants to give someone access, go straight to [Share a page with someone](#share-a-page-with-someone).
 
 If you read this file from GitHub, fetch each relative link from `https://raw.githubusercontent.com/adisidev/tailisman/main/skills/tailisman/` plus the link. The two references are [references/front-doors.md](references/front-doors.md) (discovery and config for each way pages are served) and [references/cloudflare.md](references/cloudflare.md) (tunnel API, cache purge, timeouts). [docs/GATE.md](https://github.com/adisidev/tailisman/blob/main/docs/GATE.md) is the full gate reference.
 
@@ -55,7 +55,7 @@ Send one short message. Ask only these things, and offer what you found.
 
 1. Which of these hostnames (list them) are "only for me"?
 2. Which devices count as yours? Show the device list from the command below, and say you will allowlist them by stable ID, because names can be reused.
-3. Does anyone else need in? If yes, who, and to which hostnames? They get their own guest password.
+3. Does anyone else need in? If yes, who, and to which pages, folders or whole hostnames? They get their own guest password.
 4. If a Cloudflare proxy or a remotely managed tunnel is involved, can they save a Cloudflare API token to a file for you ([permissions](references/cloudflare.md#an-api-token)), or would they rather do the dashboard steps themselves?
 
 ```sh
@@ -132,7 +132,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.tailisman-ga
 sudo systemctl enable --now tailisman-gate                                                  # Linux
 ```
 
-The gate reads `gate.toml` only at startup. Restart it after every edit to that file (`launchctl kickstart -k gui/$(id -u)/com.example.tailisman-gate` or `sudo systemctl restart tailisman-gate`). Password and guest changes need no restart.
+The gate re-reads `gate.toml` when it changes, so sites, open rules and bearers take effect on the next request. A file that does not load keeps the running config, and so does a change to `listen`, the secret, `password_file`, `guest_file`, `[rate_limit]` or `[tailnet]` (which includes the sites it covers); both are logged once, and those keys need a restart (`launchctl kickstart -k gui/$(id -u)/com.example.tailisman-gate` or `sudo systemctl restart tailisman-gate`). Password and guest changes never need one.
 
 **Check.** Do this before any traffic goes through the gate. Point `gate status` at the loopback listener with one `--base-url-for HOST=http://127.0.0.1:8471` per site. The `tailnet:` line must say `ok, served, Funnel off`, and every proxy-mode site line must end in `ok`. A `forward_auth` site answers 404 here until Caddy or nginx sits in front, so `gate status` exits 1 with only `forward_auth` lines failing: that is the expected state at this step, and those lines must pass after step 6.
 
@@ -182,7 +182,7 @@ For each caller, choose in this order.
 
 3. It sends nothing. Ask the user whether it should keep working. If yes, give it a bearer token the app checks, or leave that path open only if its content is fine to be public.
 
-**Check.** After a restart of the gate, `tailisman gate status` shows the expected `bearers` count per site. After step 6, each caller succeeds in a real run (trigger the cron job, re-deliver the webhook, run the script), and the app's log shows its request answered 200.
+**Check.** `tailisman gate status` shows the expected `bearers` count per site. After step 6, each caller succeeds in a real run (trigger the cron job, re-deliver the webhook, run the script), and the app's log shows its request answered 200.
 
 ## 6. Switch the front door
 
@@ -235,17 +235,9 @@ Run every machine caller from step 5 for real once more.
 
 ## 9. Add guests
 
-Give each guest from step 2 a generated password for named sites only.
+Give each guest from step 2 what they need with `tailisman share`, one URL at a time, as in [Share a page with someone](#share-a-page-with-someone). A URL whose path is `/` gives the whole site.
 
-```sh
-tailisman passwd --config ~/.config/tailisman/gate.toml --add alice --sites tools.example.com,notes.example.com
-tailisman passwd --config ~/.config/tailisman/gate.toml --list
-tailisman passwd --config ~/.config/tailisman/gate.toml --revoke alice
-```
-
-`--add` writes the passphrase to `guests/alice` next to the config, mode 0600, and prints paths only. Do not print the file. Tell the user its path, and that they should send it to the guest over a private channel (a password manager share, or a message that expires), then delete the file. Every host in `--sites` must be a `[[sites]]` host of this gate. `--revoke` ends the guest's sessions on their next request. None of these needs a restart.
-
-**Check.** `--list` shows each guest with only their sites.
+**Check.** Each `share` exits 0, and `tailisman guests` shows each guest with only their URLs.
 
 ## Done when
 
@@ -256,7 +248,43 @@ tailisman passwd --config ~/.config/tailisman/gate.toml --revoke alice
 - [ ] No app listens publicly on its own port.
 - [ ] Each host has a backup and a rollback script whose dry run prints the restore.
 - [ ] The user has the owner passphrase in their password manager and the file `gate-passphrase` is deleted. Guest passphrase files are handed over and deleted.
-- [ ] You told the user the gate's config path, how to roll back, and how to add or revoke a guest.
+- [ ] You told the user the gate's config path, how to roll back, and how to share a page or take it back.
+
+## Share a page with someone
+
+Use this when the gate already runs and the user asks to give someone access: "give alice a password for <url>", "share <url> with alice", "let bob see the reports folder". Run `tailisman guide share` to read this section from the installed CLI.
+
+```sh
+tailisman share https://notes.example.com/reports/ --to alice --json            # a folder: everything under /reports/
+tailisman share https://notes.example.com/reports/may.html --to alice --json    # one exact link; its query string is ignored
+tailisman guests --json                                                         # who can open what
+tailisman unshare https://notes.example.com/reports/may.html --from alice --json
+tailisman unshare --from alice --json                                           # remove alice and end her sessions
+```
+
+A URL ending in `/` shares that folder. Any other URL shares that exact path. `/` alone shares the whole site. The guest name is 1 to 32 of `a-z`, `0-9`, `_` and `-`; use the person's first name in lower case. The config defaults to `$TAILISMAN_GATE_CONFIG`, then `~/.config/tailisman/gate.toml`; pass `--config` when the gate's config lives elsewhere. `--dry-run` on any command shows the change and writes nothing.
+
+`share` creates the guest with a generated passphrase, or adds the URL to an existing guest without changing their passphrase. Running it twice changes nothing. It takes effect on the next request, with no restart, then signs in through the live site and checks that a stranger gets the sign-in page, the guest gets 200 on the URL, and the guest gets the sign-in page outside it. The page's own same-origin assets and links outside the shared scope come back in `outside_scope` and `warnings`. When the page needs them, share the folder that holds them instead, or share each one.
+
+If an open rule in `gate.toml` already makes the URL public, `share` exits 7 and says so. Add `--close-open-rule` to remove the open rules inside the shared scope. It backs `gate.toml` up first and reports the backup's path in `open_rules.backup`. An open rule wider than the URL (such as `/api/*` when sharing `/api/v1/`) is never removed; tell the user.
+
+The passphrase is in the file named by `password_file`, mode 0600. Never print it. Tell the user the path and the link, and that they should send the passphrase to the guest over a private channel and delete the file. Only when the user asks to see the passphrase, run `share` with `--print-once`, which puts it in `password` and deletes the file. A guest whose file is gone keeps their passphrase; `--new-password` gives them a new one and signs them out.
+
+Exit codes, the same for `share`, `unshare` and `guests`:
+
+| Code | Meaning | What to do |
+| --- | --- | --- |
+| 0 | Done, and every check passed. | Report the link and the passphrase file's path. |
+| 2 | Bad input: not a full URL, a `..` or encoded path, a bad name, a bad flag. | Fix the argument. |
+| 3 | The config did not load, or the host is not a `[[sites]]` host of this gate. | Pass `--config`, or gate the host first ([3. Install one gate per serving machine](#3-install-one-gate-per-serving-machine)). |
+| 4 | No such guest, URL, or passphrase file. | `tailisman guests` lists what exists. |
+| 5 | The gate answered, but not as expected. | Read the gate's log: a `gate.toml` that did not load, or that needs a restart, is logged there. |
+| 6 | The gate did not answer. | `tailisman gate status --config ...`. |
+| 7 | The URL is still public through an open rule. | `--close-open-rule`, or narrow a wider rule by hand. |
+
+With `--json`, every command prints one object with `ok`, `exit`, `warnings` and `next_steps`, plus `error` and `message` on failure. `share` adds `guest`, `host`, `scope`, `scopes`, `created`, `changed`, `open_rules`, `checks` (each with `name`, `path`, `ok`, `status`, `expected`), `password_file`, and `outside_scope` when the page was read.
+
+**Check.** `share` exited 0, and you told the user the link, the passphrase file's path, and anything in `warnings`.
 
 ## What can go wrong
 

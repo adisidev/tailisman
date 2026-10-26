@@ -25,7 +25,7 @@ from ..issuer.decision import Grant, Whois
 from ..issuer import http as issuer_http
 from ..issuer.http import IssuerApp, Response
 from .codes import CodeBook, Device
-from .config import GateConfig, Site, host_without_port
+from .config import GateConfig, LiveConfig, Site, host_without_port
 from .decision import LOGIN_PATH, Allow, Decision, GateRequest, SignIn, Unauthorised, decide, request_host, safe_next
 from .credentials import Credentials
 from .ratelimit import RateLimiter
@@ -66,7 +66,7 @@ def _snippet_path() -> Path:
 
 class GateApp:
     def __init__(self, config: GateConfig, clock: Callable[[], float] = time.time) -> None:
-        self.config = config
+        self.live = LiveConfig(config)
         self.clock = clock
         self.credentials = Credentials(config.session_secret, config.password_file, config.guest_file)
         self.limiter = RateLimiter(config.rate_limit)
@@ -110,6 +110,10 @@ class GateApp:
             return _text(404, "this gate does not cover this host\n"), None
         return methods[method](request, site)
 
+    @property
+    def config(self) -> GateConfig:
+        return self.live.current()
+
     def now(self) -> int:
         return int(self.clock())
 
@@ -149,12 +153,13 @@ class GateApp:
             return Response(200, (("Cache-Control", "no-store"),) + identity_headers(decision), b"")
         return refusal(decision)
 
-    def _current_session(self, request: Incoming, site: Site) -> Session | None:
-        return self.credentials.session_for(cookie_values(request.headers.get("Cookie"), COOKIE), site.host, self.now())
+    def _current_session(self, request: Incoming, site: Site, path: str | None = None) -> Session | None:
+        return self.credentials.session_for(cookie_values(request.headers.get("Cookie"), COOKIE), site.host, self.now(), path)
 
     def _login_page(self, request: Incoming, site: Site) -> tuple[Response, str | None]:
+        """A path-scoped guest sent here from outside their paths gets the form, as if signed out, rather than a redirect loop."""
         next_path = safe_next(request.single("next"))
-        if self._current_session(request, site):
+        if self._current_session(request, site, _path_of(next_path)):
             return _redirect(next_path), None
         return self._render_login(request, site, next_path, 200, None, signed_out=request.single("signed_out") == "1"), None
 
@@ -207,7 +212,7 @@ class GateApp:
         session = self._new_session(site, opened.method, None, opened.guest)
         cookies = (self._session_cookie(site, session, opened.key), _clear(CSRF_COOKIE, "/.tailisman/", None, "Strict"))
         who = f"as guest {opened.guest}" if opened.guest else "with the password"
-        return _redirect(next_path, cookies), f"signed in to {site.host} {who}, {ip}"
+        return _redirect(self.credentials.destination(opened.guest, site.host, next_path), cookies), f"signed in to {site.host} {who}, {ip}"
 
     def _exchange(self, request: Incoming, site: Site) -> tuple[Response, str | None]:
         next_path = safe_next(request.single("next"))
@@ -246,7 +251,7 @@ class GateApp:
         body = (
             f'<p class=site>{name}</p><h1>Signed in</h1><p>Signed in {how}, until {until}.{scope}</p>'
             f'<form method=post action="/.tailisman/logout"><input type=hidden name=csrf value="{csrf}">'
-            '<button type=submit class=secondary>Sign out</button></form><p><a href="/">Back to the site</a></p>'
+            f'<button type=submit class=secondary>Sign out</button></form><p><a href="{html.escape(self.credentials.destination(session.guest, site.host, "/"))}">Back to the site</a></p>'
         )
         return _page(200, "Signed in", body, self._csp(site), (_csrf_cookie(csrf),)), None
 
@@ -284,6 +289,10 @@ class GateApp:
         value = mint(session, key)
         domain = f"; Domain={site.cookie_domain}" if site.cookie_domain else ""
         return ("Set-Cookie", f"{COOKIE}={value}; Max-Age={self.config.session_days * 86400}; Path=/{domain}; Secure; HttpOnly; SameSite=Lax")
+
+
+def _path_of(next_path: str) -> str:
+    return next_path.split("?", 1)[0]
 
 
 def refusal(decision: SignIn | Unauthorised) -> Response:

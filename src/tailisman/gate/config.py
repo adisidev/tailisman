@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import re
+import sys
+import threading
 import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -90,6 +93,7 @@ class GateConfig:
     tailnet: Tailnet | None
     rate_limit: RateLimits
     sites: dict[str, Site]
+    source: Path | None = None
 
 
 _TOP_KEYS = {"listen", "session_secret_file", "password_file", "guest_file", "session_days", "tailnet", "rate_limit", "sites"}
@@ -121,7 +125,56 @@ def load_config(path: str | Path) -> GateConfig:
         raw = tomllib.loads(Path(path).read_text())
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    return parse_config(raw, base=Path(path).parent)
+    return dataclasses.replace(parse_config(raw, base=Path(path).parent), source=Path(path))
+
+
+RESTART_ONLY = ("listen", "session_secret", "password_file", "guest_file", "rate_limit", "tailnet")
+
+
+class LiveConfig:
+    """gate.toml, re-read when its mtime or size changes, so editing sites, open rules or bearers needs no restart.
+
+    A file that fails to load keeps the running config, and so does one that changes what only a restart can apply
+    (the listeners, the secret, the password and guest files, the rate limits, [tailnet] and the sites it covers).
+    Either is logged once per change of the file."""
+
+    def __init__(self, config: GateConfig) -> None:
+        self._config = config
+        self._lock = threading.Lock()
+        self._stamp = _stamp(config.source)
+
+    def current(self) -> GateConfig:
+        stamp = _stamp(self._config.source)
+        if stamp == self._stamp:
+            return self._config
+        with self._lock:
+            if stamp != self._stamp:
+                self._stamp = stamp
+                self._config = self._reload(self._config)
+            return self._config
+
+    @staticmethod
+    def _reload(running: GateConfig) -> GateConfig:
+        assert running.source is not None
+        try:
+            fresh = load_config(running.source)
+        except ConfigError as exc:
+            print(f"tailisman gate: {running.source} did not load, so the running config stays: {exc}", file=sys.stderr)
+            return running
+        changed = [name for name in RESTART_ONLY if getattr(fresh, name) != getattr(running, name)]
+        if changed:
+            print(f"tailisman gate: {running.source} changes {', '.join(changed)}, which needs a restart; the running config stays", file=sys.stderr)
+            return running
+        print(f"tailisman gate: reloaded {running.source}: {', '.join(fresh.sites)}", file=sys.stderr)
+        return fresh
+
+
+def _stamp(path: Path | None) -> tuple[int, int] | None:
+    try:
+        info = os.stat(path) if path is not None else None
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size) if info else None
 
 
 def parse_config(raw: dict, base: Path = Path(".")) -> GateConfig:
@@ -168,6 +221,14 @@ def parse_open_rule(text: object) -> OpenRule:
     if not is_plain_path(path):
         raise ConfigError(f"open rule {text!r} has a .. segment, an encoded character that hides one, or a backslash")
     return OpenRule(method, path, bool(star))
+
+
+def parse_guest_path(text: str) -> OpenRule:
+    """A guest's path: a folder ("/docs/*", everything under it) or one exact link ("/docs/page.html"). Open-rule grammar with no method and no comma, since the guest file joins paths with commas."""
+    rule = parse_open_rule(text)
+    if rule.method is not None or "," in rule.path:
+        raise ConfigError(f"guest path {text!r} must be \"/folder/*\" or \"/exact/link\", with no method and no comma")
+    return rule
 
 
 def is_plain_path(path: str) -> bool:

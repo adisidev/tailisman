@@ -327,6 +327,19 @@ def run(stack: Stack) -> int:
     c.check("after `tailisman passwd`, the guest session still works", reached_upstream(get("/", host=NOTES, cookie=guest_cookie)))
     revoked = stack.tailisman("passwd", "--config", str(d / "gate.toml"), "--revoke", "visitor")
     c.check("after `passwd --revoke`, the guest session is refused without a restart", revoked.returncode == 0 and get("/", host=NOTES, cookie=guest_cookie).status == 302 and not (d / "guests" / "visitor").exists(), revoked.stdout.strip())
+
+    shared = stack.tailisman("share", f"https://{NOTES}/reports/", "--to", "scoped", "--config", str(d / "gate.toml"), "--no-check", "--json")
+    scoped_phrase = (d / "guests" / "scoped").read_text().strip()
+    c.check("`share` gives a guest one folder and prints no passphrase", shared.returncode == 0 and json.loads(shared.stdout)["scope"]["kind"] == "folder" and scoped_phrase not in shared.stdout, shared.returncode)
+    page = get("/.tailisman/login?next=%2F", host=NOTES)
+    scoped_csrf = page.cookie("tailisman_csrf")
+    r = request(port, "POST", "/.tailisman/login", NOTES, form | {"Cookie": f"tailisman_csrf={scoped_csrf}", "CF-Connecting-IP": "198.51.100.6"}, urlencode({"csrf": scoped_csrf, "password": scoped_phrase, "next": "/"}).encode())
+    scoped_cookie = r.cookie("tailisman_gate")
+    c.check("a folder guest signing in from / lands on their folder", r.status == 303 and r.header("Location") == "/reports/", (r.status, r.header("Location")))
+    c.check("through Caddy, the folder guest reaches the app inside the folder", reached_upstream(get("/reports/q3.html", host=NOTES, cookie=scoped_cookie)))
+    tricks = ["/", "/notes", "/reports", "/reports/../secret", "/reports/%2e%2e/secret", "/reports/..%2Fsecret", "/reports//secret", "/REPORTS/x", "/reports;/x"]
+    answers = {path: get(path, host=NOTES, cookie=scoped_cookie).status for path in tricks}
+    c.check("through Caddy, outside the folder and every traversal spelling gets the sign-in page", all(status == 302 for status in answers.values()), answers)
     c.check("after `tailisman passwd`, an existing session cookie is refused", get("/notes", cookie=tailnet_cookie).status == 302)
     r = login(new_passphrase, "198.51.100.4")
     c.check("the new password signs in without a restart", r.status == 303 and reached_upstream(get("/notes", cookie=r.cookie("tailisman_gate"))), r.status)

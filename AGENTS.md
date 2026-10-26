@@ -4,6 +4,10 @@
 
 Follow [skills/tailisman/SKILL.md](skills/tailisman/SKILL.md) from step 1. Everything else in this file is for changing tailisman itself.
 
+## If the user asked you to share a page, or give someone a password
+
+Follow [Share a page with someone](skills/tailisman/SKILL.md#share-a-page-with-someone), which `tailisman guide share` also prints. In short: `tailisman share <url> --to <name> --json`, a folder when the URL ends in `/`, else that exact link. Never print the passphrase; report its file path.
+
 ## If you are changing tailisman
 
 Run the tests before you commit.

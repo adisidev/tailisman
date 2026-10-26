@@ -20,8 +20,8 @@ from .session import COOKIE, Session, cookie_values
 LOGIN_PATH = "/.tailisman/login"
 NAVIGATION_METHODS = ("GET", "HEAD")
 
-SessionCheck = Callable[[tuple[str, ...], str, int], Session | None]
-"""(cookie values, site key, now) -> the session they hold on that site."""
+SessionCheck = Callable[[tuple[str, ...], str, int, str], Session | None]
+"""(cookie values, site key, now, raw request path) -> the session they hold there. A path-scoped guest outside their paths holds none."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -101,7 +101,7 @@ def decide(request: GateRequest, config: GateConfig, check_session: SessionCheck
         return Allow(None)
     if request.bearer is not None and bearer_digest(request.bearer) in site.bearers:
         return Allow(None, bearer=True)
-    if session := check_session(request.cookies, site.host, now):
+    if session := check_session(request.cookies, site.host, now, request.path):
         return Allow(session)
     if request.method in NAVIGATION_METHODS and request.accepts_html:
         return SignIn(f"{LOGIN_PATH}?next={quote(request.uri, safe='')}")

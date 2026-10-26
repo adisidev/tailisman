@@ -20,6 +20,7 @@ packages = ["src/tailisman"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "client/tailisman.js" = "tailisman/gate/static/tailisman.js"
+"skills/tailisman" = "tailisman/guide_files"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

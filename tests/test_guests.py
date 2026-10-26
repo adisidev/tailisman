@@ -167,7 +167,7 @@ def test_a_malformed_guest_line_is_skipped_once_and_kept_on_rewrite(gate, gate_d
     touch(path)
     assert verify_request(gate, host=A, cookie=sign_in(gate, phrase)).status == 200
     assert verify_request(gate, host=A).status == 302
-    assert capsys.readouterr().err.count("line 1 is not a new NAME SITES DIGEST record") == 1
+    assert capsys.readouterr().err.count("line 1 is not a new NAME GRANTS DIGEST record") == 1
     add_guest(gate_dir, "bob", B)
     assert path.read_text().startswith("not a record\nalice ")
 
