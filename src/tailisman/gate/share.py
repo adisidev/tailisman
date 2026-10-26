@@ -18,6 +18,8 @@ from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 
+LOOPBACK = ("localhost", "127.0.0.1", "::1")
+
 from ..issuer.config import ConfigError
 from .config import GateConfig, OpenRule, load_config, parse_guest_path, site_key
 from .credentials import GUESTS_DIR, Grants, Guest, guest_digest, guest_records, parse_guest_line, write_guest_records
@@ -61,7 +63,7 @@ class Target:
         host = site_key(parts.netloc)
         if host is None:
             raise Failure(Exit.USAGE, "bad_url", f"{url!r} has no usable host name")
-        path = parts.path or "/"
+        path = quote(parts.path or "/", safe="/%!$&'()*+=:@")
         origin = f"{parts.scheme}://{parts.netloc}"
         if path == "/":
             return cls(host, None, origin)
@@ -117,6 +119,10 @@ def _run(args: argparse.Namespace, command: Callable[[argparse.Namespace, dict],
         code = failure.code
         report |= {"error": failure.error, "message": failure.message}
         report["next_steps"] += list(failure.next_steps)
+    except OSError as exc:
+        code = Exit.CONFIG
+        report |= {"error": "file", "message": f"could not read or write a gate file: {exc}"}
+        report["next_steps"].append("check the path and its permissions; the gate's files belong to the user the gate runs as")
     report["ok"] = code is Exit.OK
     report["exit"] = int(code)
     _emit(report, args.json)
@@ -189,13 +195,13 @@ def _share(args: argparse.Namespace, report: dict) -> Exit:
         directory.mkdir(mode=0o700, exist_ok=True)
         directory.chmod(0o700)
         write_private(passphrase_file, passphrase + "\n", overwrite=True)
+    if args.close_open_rule and inside and target.rule is not None:
+        report["open_rules"]["backup"] = str(close_open_rules(config, site.host, inside))
+        report["open_rules"]["closed"] = [str(r) for r in inside]
     digest = guest_digest(passphrase) if new_password else current.digest
     records = guest_records(config.guest_file)
     records[args.to] = Guest(args.to, grants, digest).line()
     write_guest_records(config.guest_file, records)
-    if args.close_open_rule and inside and target.rule is not None:
-        report["open_rules"]["backup"] = str(close_open_rules(config, site.host, inside))
-        report["open_rules"]["closed"] = [str(r) for r in inside]
 
     report["checks"] = [] if args.no_check else check_share(args.base_url, target, Guest(args.to, grants, digest), passphrase, report)
     if passphrase is None:
@@ -245,14 +251,16 @@ def _with_target(grants: Grants, target: Target) -> Grants:
 
 
 def _open_rules(rules: tuple[OpenRule, ...], target: Target) -> tuple[list[OpenRule], list[OpenRule]]:
-    """The open rules that expose part of the target: those inside it, which share may close, and those wider than it, which it never does."""
+    """The open rules that expose part of the target: those inside it, which share may close, and those wider than it, which it never does.
+    Compared without case, since an app on a case-insensitive filesystem serves /Reports/ for /reports/."""
     inside, wider = [], []
     for rule in rules:
+        path, shared = rule.path.lower(), target.rule.path.lower() if target.rule else "/"
         if target.rule is None:
             inside.append(rule)
-        elif rule.path.startswith(target.rule.path) and (target.rule.prefix or (rule.path == target.rule.path and not rule.prefix)):
+        elif path.startswith(shared) and (target.rule.prefix or (path == shared and not rule.prefix)):
             inside.append(rule)
-        elif rule.prefix and target.rule.path.startswith(rule.path):
+        elif rule.prefix and shared.startswith(path):
             wider.append(rule)
     return inside, wider
 
@@ -268,7 +276,7 @@ def close_open_rules(config: GateConfig, host: str, remove: list[OpenRule]) -> P
     """Rewrites one site's `open = [...]` in gate.toml without those rules, keeping every other line. The rewrite is loaded
     and compared before it replaces the file, so an edit this cannot make cleanly is refused rather than guessed."""
     assert config.source is not None
-    source = config.source
+    source = config.source.resolve()
     lines = source.read_text().splitlines(keepends=True)
     start, end = _open_array(lines, host)
     if start is None:
@@ -281,6 +289,7 @@ def close_open_rules(config: GateConfig, host: str, remove: list[OpenRule]) -> P
     temp = source.with_name(f".{source.name}.{secrets.token_hex(4)}.tmp")
     try:
         write_private(temp, text, overwrite=False)
+        os.chmod(temp, source.stat().st_mode & 0o777)
         fresh = load_config(temp)
         expected = dataclasses.replace(config.sites[host], open=tuple(kept))
         if fresh.sites != config.sites | {host: expected} or dataclasses.replace(fresh, sites={}, source=None) != dataclasses.replace(config, sites={}, source=None):
@@ -342,6 +351,9 @@ def check_share(base_url: str | None, target: Target, guest: Guest, passphrase: 
     base = urlsplit(base_url or target.origin)
     checks: list[dict] = []
     landing = target.path
+    if base.scheme != "https" and base.hostname not in LOOPBACK and passphrase is not None:
+        report["warnings"].append(f"{base.geturl()} is plain http and not this machine, so the check did not send the passphrase there; use an https URL or --base-url http://127.0.0.1:PORT")
+        passphrase = None
 
     def get(path: str, cookie: str | None = None) -> _Answer:
         return _request(base, target.host, "GET", path, cookie)

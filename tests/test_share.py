@@ -1,7 +1,9 @@
+import http.client
 import http.server
 import json
 import threading
 from functools import partial
+from urllib.parse import urlencode
 
 import pytest
 from conftest import free_port
@@ -194,3 +196,62 @@ def test_human_output_never_holds_the_passphrase(live, capsys):
     out = capsys.readouterr()
     phrase = (conf / "guests" / "carol").read_text().strip()
     assert phrase not in out.out + out.err and "check guest_opens_scope /notes/today.html: ok" in out.out
+
+
+class KeepAliveIgnoresBodies(http.server.BaseHTTPRequestHandler):
+    """An HTTP/1.1 app that never reads a request body, the shape that turns a leftover body into a second request."""
+
+    protocol_version = "HTTP/1.1"
+    seen: list = []
+
+    def handle_any(self):
+        self.seen.append((self.command, self.path))
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    do_GET = do_POST = handle_any
+
+    def log_message(self, format, *args):
+        pass
+
+
+def test_a_body_carrying_a_second_request_never_reaches_a_keep_alive_app(tmp_path, capsys):
+    upstream = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), KeepAliveIgnoresBodies))
+    (tmp_path / "gate-secret").write_bytes(SECRET)
+    (tmp_path / "gate-password").write_text(hash_password(PASSWORD, log_n=10) + "\n")
+    port = free_port()
+    (tmp_path / "gate.toml").write_text(GATE_TOML.format(port=port, host=HOST, other=OTHER, upstream=upstream.server_port))
+    gate = serve(make_server(GateApp(load_config(tmp_path / "gate.toml"))))
+    code, report = run(capsys, tmp_path, "share", f"https://{HOST}/K/", "--to", "carol", "--no-check")
+    phrase = (tmp_path / "guests" / "carol").read_text().strip()
+    conn = http.client.HTTPConnection("127.0.0.1", port)
+    conn.request("GET", "/.tailisman/login", headers={"Host": HOST})
+    form = conn.getresponse()
+    form.read()
+    csrf = form.getheader("Set-Cookie").split(";")[0].split("=", 1)[1]
+    conn.request("POST", "/.tailisman/login", body=urlencode({"csrf": csrf, "password": phrase, "next": "/K/"}), headers={"Host": HOST, "Cookie": f"tailisman_csrf={csrf}", "Content-Type": "application/x-www-form-urlencoded"})
+    login = conn.getresponse()
+    login.read()
+    cookie = login.getheader("Set-Cookie").split(";")[0]
+    smuggled = b"POST /admin/delete HTTP/1.1\r\nHost: " + HOST.encode() + b"\r\nX-Tailisman-Session: password\r\nContent-Length: 0\r\n\r\n"
+    conn.request("POST", "/K/in.html", body=smuggled, headers={"Host": HOST, "Cookie": cookie})
+    assert conn.getresponse().status == 200
+    conn.close()
+    gate.shutdown()
+    upstream.shutdown()
+    assert KeepAliveIgnoresBodies.seen == [("POST", "/K/in.html")]
+
+
+def test_the_passphrase_never_goes_to_a_plain_http_address_off_this_machine(live, capsys):
+    conf, _ = live
+    code, report = run(capsys, conf, "share", f"http://{HOST}/notes/today.html", "--to", "carol", base="http://0.0.0.0:9")
+    assert any("did not send the passphrase" in warning for warning in report["warnings"])
+    assert [check["name"] for check in report["checks"]] == ["gate_reachable"]
+
+
+def test_a_non_ascii_path_is_stored_as_the_browser_sends_it(live, capsys):
+    conf, base = live
+    code, report = run(capsys, conf, "share", f"https://{HOST}/caf\u00e9/", "--to", "carol", "--no-check")
+    assert code == Exit.OK and report["scope"]["path"] == "/caf%C3%A9/"

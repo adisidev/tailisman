@@ -45,6 +45,8 @@ def test_a_folder_guest_opens_the_folder_and_gets_the_sign_in_page_everywhere_el
     "/REPORTS/x.html",
     "/Reports/x.html",
     "/%72eports/x.html",
+    "/reports/%00/../x",
+    "/reports/x%00.html",
 ])
 def test_traversal_encoding_slash_and_case_tricks_never_reach_outside_the_folder(gate, gate_dir, uri):
     cookie = sign_in(gate, scoped(gate_dir))

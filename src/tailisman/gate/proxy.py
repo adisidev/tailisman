@@ -94,8 +94,11 @@ def upstream_headers(headers: Message, identity: Headers, peer: str, body: int |
         *identity,
     ]
     if websocket:
-        sent += [("Connection", "Upgrade"), ("Upgrade", "websocket")]
-    elif body == "chunked":
+        return sent + [("Connection", "Upgrade"), ("Upgrade", "websocket")]
+    # One request per upstream connection: an app that leaves a body unread would otherwise run the rest of it as a
+    # second request the gate never judged.
+    sent.append(("Connection", "close"))
+    if body == "chunked":
         sent.append(("Transfer-Encoding", "chunked"))
     elif body is not None:
         sent.append(("Content-Length", str(body)))

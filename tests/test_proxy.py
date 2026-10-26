@@ -72,13 +72,14 @@ def test_upstream_headers_drop_hop_by_hop_gate_cookies_and_client_identity():
         ("X-Forwarded-Host", "app.example.com"),
         ("X-Tailisman-Session", "guest"),
         ("X-Tailisman-User", "alice"),
+        ("Connection", "close"),
         ("Content-Length", "10"),
     ]
 
 
 def test_a_request_with_only_gate_cookies_reaches_the_app_with_no_cookie_header():
     forwarded = upstream_headers(headers({"Host": "a.example.com", "Cookie": "tailisman_gate=x"}), (), "127.0.0.1", None, websocket=False)
-    assert [name for name, _ in forwarded] == ["Host", "X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host"]
+    assert [name for name, _ in forwarded] == ["Host", "X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "Connection"]
 
 
 def test_a_websocket_upgrade_keeps_its_upgrade_and_a_chunked_body_is_rechunked():
@@ -103,7 +104,7 @@ def test_client_headers_apply_the_private_cache_rule_and_keep_set_cookie_lines()
 def test_upstream_headers_drop_every_name_with_an_underscore():
     sent = headers({"Host": "a.example.com", "X_Tailisman_Session": "password", "x_tailisman_user": "owner", "X_Forwarded_For": "203.0.113.9", "Accept_Language": "en", "Accept": "text/html"})
     forwarded = upstream_headers(sent, (("X-Tailisman-Session", "password"),), "127.0.0.1", None, websocket=False)
-    assert [name for name, _ in forwarded] == ["Host", "Accept", "X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Tailisman-Session"]
+    assert [name for name, _ in forwarded] == ["Host", "Accept", "X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Tailisman-Session", "Connection"]
 
 
 @pytest.mark.parametrize("raw", [b"Foo: bar\r\n X-Tailisman-Session: password\r\n", b"Foo: bar\r\n\tmore\r\n"])

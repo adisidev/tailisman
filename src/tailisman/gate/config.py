@@ -232,9 +232,9 @@ def parse_guest_path(text: str) -> OpenRule:
 
 
 def is_plain_path(path: str) -> bool:
-    """False for anything an upstream might normalise into another path: .. segments, empty segments (//), ;params, %2e, %2f, %5c, backslashes."""
+    """False for anything an upstream might normalise into another path: .. segments, empty segments (//), ;params, %2e, %2f, %5c, %00, backslashes."""
     lowered = path.lower()
-    if "\\" in path or ";" in path or any(code in lowered for code in ("%2e", "%2f", "%5c")):
+    if "\\" in path or ";" in path or any(code in lowered for code in ("%2e", "%2f", "%5c", "%00")):
         return False
     segments = path.split("/")[1:]
     return ".." not in segments and "" not in segments[:-1]
