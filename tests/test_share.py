@@ -260,3 +260,20 @@ def test_a_non_ascii_path_is_stored_as_the_browser_sends_it(live, capsys):
     conf, base = live
     code, report = run(capsys, conf, "share", f"https://{HOST}/caf\u00e9/", "--to", "carol", "--no-check")
     assert code == Exit.OK and report["scope"]["path"] == "/caf%C3%A9/"
+
+
+def test_close_open_rule_edits_the_file_a_symlinked_gate_toml_points_at(live, capsys):
+    conf, base = live
+    real = conf / "gate.toml"
+    linked = conf.parent / "linked"
+    linked.mkdir()
+    (linked / "gate.toml").symlink_to(real)
+    for name in ("gate-secret", "gate-password"):
+        (linked / name).symlink_to(conf / name)
+    real.chmod(0o640)
+    capsys.readouterr()
+    code = main(["share", f"https://{HOST}/reports/", "--to", "carol", "--close-open-rule", "--no-check", "--json", "--config", str(linked / "gate.toml")])
+    report = json.loads(capsys.readouterr().out)
+    assert code == Exit.OK, report
+    assert (linked / "gate.toml").is_symlink() and 'open = ["/healthz"]' in real.read_text()
+    assert real.stat().st_mode & 0o777 == 0o640

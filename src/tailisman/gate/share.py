@@ -274,33 +274,38 @@ def _read_passphrase(path: Path) -> str | None:
 
 def close_open_rules(config: GateConfig, host: str, remove: list[OpenRule]) -> Path:
     """Rewrites one site's `open = [...]` in gate.toml without those rules, keeping every other line. The rewrite is loaded
-    and compared before it replaces the file, so an edit this cannot make cleanly is refused rather than guessed."""
+    beside gate.toml as given (so its relative paths mean what they meant) and compared with the running config before it
+    replaces the file, so an edit this cannot make cleanly is refused rather than guessed. A symlinked gate.toml has the
+    file it points at rewritten, with that file's mode kept."""
     assert config.source is not None
-    source = config.source.resolve()
-    lines = source.read_text().splitlines(keepends=True)
+    given, target = config.source, config.source.resolve()
+    lines = target.read_text().splitlines(keepends=True)
     start, end = _open_array(lines, host)
     if start is None:
-        raise Failure(Exit.CONFIG, "open_rule_edit", f"could not find {host}'s open = [...] in {source}", (f"remove {', '.join(map(str, remove))} from it by hand",))
+        raise Failure(Exit.CONFIG, "open_rule_edit", f"could not find {host}'s open = [...] in {given}", (f"remove {', '.join(map(str, remove))} from it by hand",))
     kept = [rule for rule in config.sites[host].open if rule not in remove]
     indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
     comment = _trailing_comment(lines[end]) if kept else ""
     replacement = f"{indent}open = [{', '.join(json.dumps(str(rule)) for rule in kept)}]{comment}\n"
     text = "".join(lines[:start] + [replacement] + lines[end + 1 :])
-    temp = source.with_name(f".{source.name}.{secrets.token_hex(4)}.tmp")
+    probe = given.with_name(f".{given.name}.{secrets.token_hex(4)}.probe")
+    staged = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
     try:
-        write_private(temp, text, overwrite=False)
-        os.chmod(temp, source.stat().st_mode & 0o777)
-        fresh = load_config(temp)
+        write_private(probe, text, overwrite=False)
+        fresh = load_config(probe)
         expected = dataclasses.replace(config.sites[host], open=tuple(kept))
         if fresh.sites != config.sites | {host: expected} or dataclasses.replace(fresh, sites={}, source=None) != dataclasses.replace(config, sites={}, source=None):
             raise ConfigError("the rewritten file did not parse to the same config minus those rules")
-        backup = source.with_name(f"{source.name}.bak-share-{datetime.datetime.now().strftime('%Y%m%dT%H%M%S')}")
-        shutil.copy2(source, backup)
-        os.replace(temp, source)
+        backup = target.with_name(f"{target.name}.bak-share-{datetime.datetime.now().strftime('%Y%m%dT%H%M%S')}")
+        shutil.copy2(target, backup)
+        write_private(staged, text, overwrite=False)
+        os.chmod(staged, target.stat().st_mode & 0o777)
+        os.replace(staged, target)
     except ConfigError as exc:
-        raise Failure(Exit.CONFIG, "open_rule_edit", f"could not remove the open rules from {source} cleanly: {exc}", (f"remove {', '.join(map(str, remove))} by hand",)) from exc
+        raise Failure(Exit.CONFIG, "open_rule_edit", f"could not remove the open rules from {given} cleanly: {exc}", (f"remove {', '.join(map(str, remove))} by hand",)) from exc
     finally:
-        temp.unlink(missing_ok=True)
+        probe.unlink(missing_ok=True)
+        staged.unlink(missing_ok=True)
     return backup
 
 
